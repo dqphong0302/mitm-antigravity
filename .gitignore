@@ -5,4 +5,4 @@ settings.json
 .DS_Store
 gui_current_state.png
 src-tauri/target/
-src-tauri/resources/settings.json
+src-tauri/resources/
