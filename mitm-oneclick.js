@@ -50,12 +50,14 @@ const DEFAULT_CONFIG = {
   model: "",
   modelPrefix: "ag/",
   alwaysIntercept: false,
-  mockModelList: false,
-  modelMap: Object.fromEntries(ANTIGRAVITY_ALIASES.map((alias) => [alias, PRESET_9ROUTER_MODEL])),
+  mockModelList: true,
+  modelMap: {},
   maxRetries: 5,
   retryDelay: 1000,
   retryBackoff: 1.5,
 };
+
+const LEGACY_DEFAULT_MODEL_MAP = Object.fromEntries(ANTIGRAVITY_ALIASES.map((alias) => [alias, PRESET_9ROUTER_MODEL]));
 
 function isRoot() {
   return typeof process.getuid === "function" && process.getuid() === 0;
@@ -232,10 +234,10 @@ function mergeConfig(base, override) {
   return {
     ...base,
     ...override,
-    modelMap: {
+    modelMap: normalizeModelMap({
       ...(base.modelMap || {}),
       ...(override.modelMap || {}),
-    },
+    }),
   };
 }
 
@@ -312,10 +314,17 @@ function mappingModel(entry) {
 
 function normalizeModelMap(modelMap) {
   if (!modelMap || typeof modelMap !== "object" || Array.isArray(modelMap)) return {};
-  return Object.fromEntries(Object.entries(modelMap)
+  return stripLegacyDefaultMappings(Object.fromEntries(Object.entries(modelMap)
     .map(([key, value]) => [String(key).trim(), normalizeMappingEntry(value)])
     .filter(([key, value]) => key && value)
-    .map(([key, value]) => [key, value.reasoning_effort ? value : value.model]));
+    .map(([key, value]) => [key, value.reasoning_effort ? value : value.model])));
+}
+
+function stripLegacyDefaultMappings(modelMap) {
+  const entries = Object.entries(modelMap || {});
+  if (entries.length !== ANTIGRAVITY_ALIASES.length) return modelMap || {};
+  const isOnlyLegacyDefaults = ANTIGRAVITY_ALIASES.every((alias) => mappingModel(modelMap[alias]) === LEGACY_DEFAULT_MODEL_MAP[alias]);
+  return isOnlyLegacyDefaults ? {} : modelMap;
 }
 
 function redactConfig(config) {
@@ -701,8 +710,12 @@ function guiHtml() {
           <input id="modelPrefix" placeholder="ag/">
         </label>
         <div class="full checkbox-row">
-          <input type="checkbox" id="alwaysIntercept">
-          <label for="alwaysIntercept" style="flex-direction:row;color:var(--text);cursor:pointer;">Always intercept (even without mapping)</label>
+          <input type="checkbox" id="passthroughUnmapped">
+          <label for="passthroughUnmapped" style="flex-direction:row;color:var(--text);cursor:pointer;">Passthrough unmapped Antigravity models to Google</label>
+        </div>
+        <div class="full checkbox-row">
+          <input type="checkbox" id="mockModelList">
+          <label for="mockModelList" style="flex-direction:row;color:var(--text);cursor:pointer;">Expose custom aliases to Antigravity model list</label>
         </div>
       </div>
       <div class="row" style="margin-top:16px;">
@@ -715,12 +728,12 @@ function guiHtml() {
     <section class="tab-panel" id="tabMappingPanel" data-panel="mapping">
     <div class="card">
       <div class="card-header">
-        <div class="card-title">\uD83D\uDDFA Model Mapping <span class="tag purple" id="mappingCount">0 mappings</span></div>
+        <div class="card-title">\uD83D\uDDFA Custom Models <span class="tag purple" id="mappingCount">0 custom</span></div>
       </div>
       <div class="divider"></div>
       <table>
         <thead><tr>
-          <th>Antigravity alias</th>
+          <th>Custom Antigravity model name</th>
           <th style="width:5%"></th>
           <th>Upstream model</th>
           <th style="width:140px;">Reasoning</th>
@@ -729,12 +742,14 @@ function guiHtml() {
         <tbody id="mappingRows"></tbody>
       </table>
       <div class="new-alias-row" style="margin-top:16px;">
-        <input id="newAlias" placeholder="New Antigravity alias (e.g. my-model)">
-        <button class="secondary" id="addAliasBtn">+ Add alias</button>
+        <input id="newAlias" placeholder="Custom model name shown in Antigravity (e.g. my-gpt-5-high)">
+        <input id="newAliasModel" placeholder="Upstream model (e.g. cx/gpt-5.5)">
+        <select id="newAliasReasoning" style="max-width:170px;"><option value="">Default reasoning</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select>
+        <button class="secondary" id="addAliasBtn">+ Create custom model</button>
       </div>
       <div style="margin-top:10px;font-size:12px;color:var(--muted);">
-        Mappings saved to <span style="font-family:'JetBrains Mono',monospace;color:var(--accent2);" id="settingsPathHint">settings.json</span>.
-        Click \u201cTest &amp; Load Models\u201d to populate upstream dropdowns.
+        Custom models are saved to <span style="font-family:'JetBrains Mono',monospace;color:var(--accent2);" id="settingsPathHint">settings.json</span>.
+        Unmapped built-in Antigravity models passthrough to Google by default. Create a custom model only when you want to route it to 9router/custom upstream.
       </div>
     </div>
     </section>
@@ -777,7 +792,7 @@ function guiHtml() {
     </section>
   </main>
   <script>
-    const state = { config: null, aliases: [], models: [], presets: {} };
+    const state = { config: null, aliases: [], builtInAliases: [], models: [], presets: {} };
     const $ = (id) => document.getElementById(id);
     function showStatus(text, kind) {
       const el = $('endpointStatus');
@@ -824,7 +839,8 @@ function guiHtml() {
         apiKey: $('apiKey').value,
         model: $('model').value.trim(),
         modelPrefix: $('modelPrefix').value.trim(),
-        alwaysIntercept: $('alwaysIntercept').checked,
+        alwaysIntercept: !$('passthroughUnmapped').checked,
+        mockModelList: $('mockModelList').checked,
         modelMap: readMappings(),
       };
     }
@@ -868,10 +884,10 @@ function guiHtml() {
     }
     function renderMappings() {
       const map = (state.config && state.config.modelMap) || {};
-      const aliases = Array.from(new Set([...state.aliases, ...Object.keys(map)]));
-      $('mappingCount').textContent = aliases.length + ' mapping' + (aliases.length !== 1 ? 's' : '');
+      const aliases = Array.from(new Set(Object.keys(map).filter(Boolean)));
+      $('mappingCount').textContent = aliases.length + ' custom' + (aliases.length !== 1 ? ' models' : ' model');
       if (aliases.length === 0) {
-        $('mappingRows').innerHTML = '<tr class="empty-row"><td colspan="5">No mappings yet. Add below or click "Test &amp; Load Models".</td></tr>';
+        $('mappingRows').innerHTML = '<tr class="empty-row"><td colspan="5">No custom models yet. Built-in Antigravity models will passthrough to Google unless you create an alias here.</td></tr>';
         return;
       }
       $('mappingRows').innerHTML = aliases.map(alias => {
@@ -904,7 +920,8 @@ function guiHtml() {
     async function load() {
       const data = await api('/api/bootstrap');
       state.config = data.config;
-      state.aliases = data.antigravityAliases;
+      state.aliases = Object.keys((state.config && state.config.modelMap) || {});
+      state.builtInAliases = data.antigravityAliases || [];
       state.presets = data.presets || {};
       $('configPath').textContent = data.configPath;
       $('settingsPathHint').textContent = data.configPath;
@@ -912,7 +929,8 @@ function guiHtml() {
       $('apiKey').value = state.config.apiKey || '';
       $('model').value = state.config.model || '';
       $('modelPrefix').value = state.config.modelPrefix || '';
-      $('alwaysIntercept').checked = state.config.alwaysIntercept === true;
+      $('passthroughUnmapped').checked = state.config.alwaysIntercept !== true;
+      $('mockModelList').checked = state.config.mockModelList !== false;
       renderMappings();
       loadStatus();
     }
@@ -1111,9 +1129,13 @@ function guiHtml() {
       if (!alias) return;
       if (state.config) state.config.modelMap = readMappings();
       else state.config = { modelMap: {} };
-      if (!state.config.modelMap[alias]) state.config.modelMap[alias] = PRESET_9ROUTER_MODEL;
+      const upstream = $('newAliasModel').value.trim() || PRESET_9ROUTER_MODEL;
+      const reasoning = $('newAliasReasoning').value || '';
+      state.config.modelMap[alias] = reasoning ? { model: upstream, reasoning_effort: reasoning } : upstream;
       if (!state.aliases.includes(alias)) state.aliases.push(alias);
       $('newAlias').value = '';
+      $('newAliasModel').value = '';
+      $('newAliasReasoning').value = '';
       renderMappings();
     });
     load().catch(e => showStatus('\u2717 ' + e.message, 'err'));
@@ -1160,7 +1182,7 @@ async function runGui(options) {
           model: String(body.model || "").trim(),
           modelPrefix: String(body.modelPrefix || "").trim(),
           alwaysIntercept: body.alwaysIntercept === true,
-          mockModelList: body.mockModelList === true,
+          mockModelList: body.mockModelList !== false,
           modelMap,
         };
         writeConfig(next);
@@ -2090,7 +2112,7 @@ function buildAntigravityModelList(options) {
   const modelMap = options.modelMap || {};
   const aliases = Array.from(new Set([
     ...Object.keys(modelMap),
-    ...ANTIGRAVITY_ALIASES,
+    ...(options.mockModelList === false ? ANTIGRAVITY_ALIASES : []),
   ].filter(Boolean)));
   const resetTime = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const models = {};
