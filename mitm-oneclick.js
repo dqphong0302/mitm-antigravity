@@ -759,6 +759,8 @@ function guiHtml() {
         <button id="applyDnsBtn">\uD83D\uDEE1 Apply DNS &amp; Cert</button>
         <button class="secondary" id="applyTrustBtn">Apply Antigravity Trust</button>
         <button class="secondary" id="removeDnsBtn">\u2715 Remove DNS</button>
+        <button class="secondary" id="enableAutoStartBtn">Enable Auto Start</button>
+        <button class="secondary" id="disableAutoStartBtn">Disable Auto Start</button>
       </div>
       <div id="systemStatus" class="status" style="margin-bottom:14px;display:none;"></div>
       <div class="status-grid">
@@ -770,7 +772,8 @@ function guiHtml() {
         <div class="stat-card"><div class="stat-label">Redirect IP</div><div class="stat-value neutral" id="s-ip">\u2014</div></div>
         <div class="stat-card"><div class="stat-label">Mapped Models</div><div class="stat-value neutral" id="s-models">\u2014</div></div>
         <div class="stat-card"><div class="stat-label">Router URL</div><div class="stat-value neutral" style="font-size:11px;word-break:break-all;" id="s-router">\u2014</div></div>
-    </div>
+        <div class="stat-card"><div class="stat-label">Auto Start</div><div class="stat-value neutral" id="s-autostart">\u2014</div></div>
+      </div>
     </section>
   </main>
   <script>
@@ -952,6 +955,7 @@ function guiHtml() {
         setVal('s-ip',     s.redirectIp    || '\u2014',                      s.redirectIp ? 'ok' : 'neutral');
         setVal('s-models', s.mappedModels  + ' alias' + (s.mappedModels !== 1 ? 'es' : ''), s.mappedModels > 0 ? 'ok' : 'warn');
         setVal('s-router', s.routerUrl     || '\u2014',                      'neutral');
+        setVal('s-autostart', s.autoStart && s.autoStart.enabled ? 'Enabled' : 'Disabled', s.autoStart && s.autoStart.enabled ? 'ok' : 'warn');
       } catch(e) { /* best-effort */ }
     }
     function setSystemButtons(disabled) {
@@ -960,6 +964,8 @@ function guiHtml() {
       $('applyDnsBtn').disabled = disabled;
       $('applyTrustBtn').disabled = disabled;
       $('removeDnsBtn').disabled = disabled;
+      $('enableAutoStartBtn').disabled = disabled;
+      $('disableAutoStartBtn').disabled = disabled;
     }
     async function startProxy() {
       setSystemButtons(true);
@@ -1045,6 +1051,32 @@ function guiHtml() {
         setSystemButtons(false);
       }
     }
+    async function enableAutoStartUi() {
+      setSystemButtons(true);
+      showSystemStatus('Enabling auto start\u2026', 'loading');
+      try {
+        const result = await api('/api/autostart/enable', { method: 'POST', body: JSON.stringify({}) });
+        showSystemStatus('\u2713 Auto start enabled via ' + result.method, 'ok');
+        loadStatus();
+      } catch (e) {
+        showSystemStatus('\u2717 ' + e.message, 'err');
+      } finally {
+        setSystemButtons(false);
+      }
+    }
+    async function disableAutoStartUi() {
+      setSystemButtons(true);
+      showSystemStatus('Disabling auto start\u2026', 'loading');
+      try {
+        const result = await api('/api/autostart/disable', { method: 'POST', body: JSON.stringify({}) });
+        showSystemStatus('\u2713 Auto start disabled', 'ok');
+        loadStatus();
+      } catch (e) {
+        showSystemStatus('\u2717 ' + e.message, 'err');
+      } finally {
+        setSystemButtons(false);
+      }
+    }
     document.querySelectorAll('.tab-btn').forEach((btn) => {
       btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
@@ -1056,6 +1088,8 @@ function guiHtml() {
     $('applyDnsBtn').addEventListener('click', applyDns);
     $('applyTrustBtn').addEventListener('click', applyTrust);
     $('removeDnsBtn').addEventListener('click', removeDns);
+    $('enableAutoStartBtn').addEventListener('click', enableAutoStartUi);
+    $('disableAutoStartBtn').addEventListener('click', disableAutoStartUi);
     $('eyeBtn').addEventListener('click', () => {
       const inp = $('apiKey');
       inp.type = inp.type === 'password' ? 'text' : 'password';
@@ -1212,6 +1246,21 @@ async function runGui(options) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/api/autostart") {
+        sendJson(res, 200, await autoStartStatus());
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/autostart/enable") {
+        sendJson(res, 200, await enableAutoStart());
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/autostart/disable") {
+        sendJson(res, 200, await disableAutoStart());
+        return;
+      }
+
       if (req.method === "GET" && url.pathname === "/api/status") {
         const cfg = readConfig();
         const { certPath } = certPaths();
@@ -1232,6 +1281,7 @@ async function runGui(options) {
           routerUrl: cfg.routerUrl || "",
           mappedModels: Object.keys(cfg.modelMap || {}).length,
           machine: machineId(),
+          autoStart: await autoStartStatus(),
         };
         sendJson(res, 200, status);
         return;
@@ -1506,21 +1556,149 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
   return { started: true, alreadyRunning: false, port, logPath };
 }
 
+async function pidsListeningOnPortUnix(port) {
+  try {
+    const { stdout } = await execPromise(`lsof -ti tcp:${Number(port)} -sTCP:LISTEN 2>/dev/null || true`);
+    return Array.from(new Set(stdout.split(/\s+/).map((pid) => pid.trim()).filter(Boolean)));
+  } catch (_) {
+    return [];
+  }
+}
+
+async function pidsListeningOnPortWindows(port) {
+  try {
+    const { stdout } = await execPowerShell(`Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`);
+    return Array.from(new Set(stdout.split(/\s+/).map((pid) => pid.trim()).filter(Boolean)));
+  } catch (_) {
+    return [];
+  }
+}
+
 async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET }) {
   if (!(await checkProxyHealth(port, targetHost)) && !(await isPortListening(port))) {
-    return { stopped: false, alreadyStopped: true, port };
+    return { stopped: false, wasRunning: false, port };
+  }
+
+  if (!IS_WIN && !isRoot() && !sudoPassword) throw new Error("Missing sudo password");
+
+  if (IS_WIN) {
+    const pids = await pidsListeningOnPortWindows(port);
+    if (pids.length === 0) return { stopped: false, wasRunning: false, port };
+    await execPowerShell(pids.map((pid) => `Stop-Process -Id ${pid} -Force`).join("; "), { elevated: true });
+  } else {
+    const pids = await pidsListeningOnPortUnix(port);
+    if (pids.length === 0) return { stopped: false, wasRunning: false, port };
+    await execWithSudo(`kill ${pids.map((pid) => shellQuote(pid)).join(" ")}`, sudoPassword);
+  }
+
+  for (let i = 0; i < 10; i += 1) {
+    if (!(await isPortListening(port))) return { stopped: true, wasRunning: true, port };
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  return { stopped: true, wasRunning: true, port, warning: `Port ${port} may still be shutting down` };
+}
+
+function autoStartLabel() {
+  return "io.phongdang.mitm-antigravity.proxy";
+}
+
+function autoStartName() {
+  return "MITM Antigravity Proxy";
+}
+
+function autoStartPath() {
+  if (IS_MAC) return path.join(os.homedir(), "Library", "LaunchAgents", `${autoStartLabel()}.plist`);
+  if (IS_WIN) return autoStartName();
+  return path.join(appDir(), "mitm-antigravity.service");
+}
+
+function autoStartCommandParts() {
+  if (process.pkg) return [process.execPath, "start", "--skip-setup"];
+  return [process.execPath, __filename, "start", "--skip-setup"];
+}
+
+function autoStartShellCommand() {
+  return autoStartCommandParts().map((part) => shellQuote(part)).join(" ");
+}
+
+async function isAutoStartEnabled() {
+  if (IS_MAC) return fs.existsSync(autoStartPath());
+  if (IS_WIN) {
+    try {
+      await execPowerShell(`Get-ScheduledTask -TaskName '${autoStartName().replace(/'/g, "''")}' -ErrorAction Stop | Out-Null`);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+  return fs.existsSync(autoStartPath());
+}
+
+async function autoStartStatus() {
+  return {
+    supported: IS_MAC || IS_WIN || !IS_WIN,
+    enabled: await isAutoStartEnabled(),
+    method: IS_MAC ? "macOS LaunchAgent" : (IS_WIN ? "Windows Scheduled Task" : "Linux user systemd"),
+    path: autoStartPath(),
+  };
+}
+
+async function enableAutoStart() {
+  ensureAppDir();
+  const commandParts = autoStartCommandParts();
+  if (IS_MAC) {
+    const plistPath = autoStartPath();
+    fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+    const argsXml = commandParts.map((part) => `    <string>${xmlEscape(part)}</string>`).join("\n");
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xmlEscape(autoStartLabel())}</string>\n  <key>ProgramArguments</key>\n  <array>\n${argsXml}\n  </array>\n  <key>WorkingDirectory</key>\n  <string>${xmlEscape(runtimeDir())}</string>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>StandardOutPath</key>\n  <string>${xmlEscape(path.join(appDir(), "autostart.log"))}</string>\n  <key>StandardErrorPath</key>\n  <string>${xmlEscape(path.join(appDir(), "autostart.err.log"))}</string>\n</dict>\n</plist>\n`;
+    fs.writeFileSync(plistPath, plist);
+    await execPromise(`launchctl unload ${shellQuote(plistPath)} >/dev/null 2>&1 || true`);
+    await execPromise(`launchctl load ${shellQuote(plistPath)}`);
+    return { enabled: true, method: "macOS LaunchAgent", path: plistPath };
   }
 
   if (IS_WIN) {
-    await execPowerShell(`$port=${Number(port)}; Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force }`, { elevated: true });
-  } else {
-    if (!isRoot() && !sudoPassword) throw new Error("Missing sudo password");
-    const command = `pids=$(lsof -ti tcp:${Number(port)} -sTCP:LISTEN 2>/dev/null || true); [ -z "$pids" ] || kill $pids`;
-    await execWithSudo(command, sudoPassword);
+    const command = commandParts[0];
+    const args = commandParts.slice(1).join(" ");
+    await execPowerShell(`$action = New-ScheduledTaskAction -Execute '${command.replace(/'/g, "''")}' -Argument '${args.replace(/'/g, "''")}' -WorkingDirectory '${runtimeDir().replace(/'/g, "''")}'; $trigger = New-ScheduledTaskTrigger -AtLogOn; Register-ScheduledTask -TaskName '${autoStartName().replace(/'/g, "''")}' -Action $action -Trigger $trigger -Description 'Start MITM Antigravity proxy after login' -Force | Out-Null`, { elevated: true });
+    return { enabled: true, method: "Windows Scheduled Task", path: autoStartName() };
   }
 
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  return { stopped: !(await isPortListening(port)), port };
+  const servicePath = autoStartPath();
+  const service = `[Unit]\nDescription=MITM Antigravity Proxy\nAfter=network-online.target\n\n[Service]\nType=simple\nWorkingDirectory=${runtimeDir()}\nExecStart=${autoStartShellCommand()}\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`;
+  fs.writeFileSync(servicePath, service);
+  await execPromise(`mkdir -p ${shellQuote(path.join(os.homedir(), ".config", "systemd", "user"))} && cp ${shellQuote(servicePath)} ${shellQuote(path.join(os.homedir(), ".config", "systemd", "user", "mitm-antigravity.service"))} && systemctl --user daemon-reload && systemctl --user enable mitm-antigravity.service`);
+  return { enabled: true, method: "Linux user systemd", path: servicePath };
+}
+
+async function disableAutoStart() {
+  if (IS_MAC) {
+    const plistPath = autoStartPath();
+    await execPromise(`launchctl unload ${shellQuote(plistPath)} >/dev/null 2>&1 || true`).catch(() => { });
+    if (fs.existsSync(plistPath)) fs.unlinkSync(plistPath);
+    return { enabled: false, method: "macOS LaunchAgent", path: plistPath };
+  }
+
+  if (IS_WIN) {
+    await execPowerShell(`Unregister-ScheduledTask -TaskName '${autoStartName().replace(/'/g, "''")}' -Confirm:$false -ErrorAction SilentlyContinue`, { elevated: true });
+    return { enabled: false, method: "Windows Scheduled Task", path: autoStartName() };
+  }
+
+  await execPromise(`systemctl --user disable --now mitm-antigravity.service >/dev/null 2>&1 || true`).catch(() => { });
+  const systemdPath = path.join(os.homedir(), ".config", "systemd", "user", "mitm-antigravity.service");
+  if (fs.existsSync(systemdPath)) fs.unlinkSync(systemdPath);
+  if (fs.existsSync(autoStartPath())) fs.unlinkSync(autoStartPath());
+  return { enabled: false, method: "Linux user systemd", path: autoStartPath() };
+}
+
+function xmlEscape(value) {
+  return String(value || "").replace(/[<>&"']/g, (char) => ({
+    "<": "&lt;",
+    ">": "&gt;",
+    "&": "&amp;",
+    "\"": "&quot;",
+    "'": "&apos;",
+  }[char]));
 }
 
 async function generateCert(targetHostOrHosts, { force = false } = {}) {

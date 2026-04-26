@@ -186,6 +186,8 @@ The Tauri app starts the bundled backend with `gui --no-open` and displays `http
 
 Runtime settings are saved persistently under the user profile at `~/.mitm-antigravity/settings.json`. A bundled or local `settings.json` is only used as a first-run fallback/import source, so app updates or moving the app bundle should not delete your saved configuration.
 Certificates are kept in the user's home directory under `.mitm-antigravity`.
+
+The Tauri app's `Proxy & System` tab includes `Start Proxy`, `Stop Proxy`, `Enable Auto Start`, and `Disable Auto Start` controls. Auto-start runs `start --skip-setup` after user login using a macOS LaunchAgent, Windows Scheduled Task, or Linux user systemd service. Run `Apply DNS & Cert` once before relying on auto-start so the OS trust/DNS setup is already in place.
 By default, `npm run build` and `npm run tauri:build` strip `apiKey` from packaged settings so packaged builds do not carry your local secret. Set `MITM_COPY_SETTINGS_WITH_SECRETS=true` only for a private build where you explicitly want to copy the key.
 
 ## Notes
