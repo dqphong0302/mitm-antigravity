@@ -283,6 +283,34 @@ function parseModelMapFile(modelMapFile) {
   }
 }
 
+function normalizeMappingEntry(entry) {
+  if (!entry) return null;
+  if (typeof entry === "string") {
+    const model = entry.trim();
+    return model ? { model } : null;
+  }
+  if (typeof entry === "object" && !Array.isArray(entry)) {
+    const model = String(entry.model || "").trim();
+    const reasoningEffort = String(entry.reasoning_effort || "").trim();
+    if (!model) return null;
+    return reasoningEffort ? { model, reasoning_effort: reasoningEffort } : { model };
+  }
+  return null;
+}
+
+function mappingModel(entry) {
+  const normalized = normalizeMappingEntry(entry);
+  return normalized ? normalized.model : "";
+}
+
+function normalizeModelMap(modelMap) {
+  if (!modelMap || typeof modelMap !== "object" || Array.isArray(modelMap)) return {};
+  return Object.fromEntries(Object.entries(modelMap)
+    .map(([key, value]) => [String(key).trim(), normalizeMappingEntry(value)])
+    .filter(([key, value]) => key && value)
+    .map(([key, value]) => [key, value.reasoning_effort ? value : value.model]));
+}
+
 function redactConfig(config) {
   return {
     ...config,
@@ -680,6 +708,7 @@ function guiHtml() {
           <th>Antigravity alias</th>
           <th style="width:5%"></th>
           <th>Upstream model</th>
+          <th style="width:140px;">Reasoning</th>
           <th style="width:80px;"></th>
         </tr></thead>
         <tbody id="mappingRows"></tbody>
@@ -787,7 +816,10 @@ function guiHtml() {
         const sel = row.querySelector('select');
         const inp = row.querySelector('input.custom-model');
         const value = sel ? sel.value.trim() : (inp ? inp.value.trim() : '');
-        if (alias && value) out[alias] = value;
+        const reasoning = (row.querySelector('select.reasoning-effort') || {}).value || '';
+        if (alias && value) {
+          out[alias] = reasoning ? { model: value, reasoning_effort: reasoning } : value;
+        }
       });
       return out;
     }
@@ -802,6 +834,19 @@ function guiHtml() {
       }
       return '<input class="custom-model" value="' + esc(selected) + '" placeholder="e.g. cx/gpt-5.5">';
     }
+    function mappingModelValue(entry) {
+      if (!entry) return '';
+      if (typeof entry === 'string') return entry;
+      if (typeof entry === 'object') return entry.model || '';
+      return '';
+    }
+    function mappingReasoningValue(entry) {
+      return entry && typeof entry === 'object' ? (entry.reasoning_effort || '') : '';
+    }
+    function makeReasoningCell(selected) {
+      const options = ['', 'minimal', 'low', 'medium', 'high'];
+      return '<select class="reasoning-effort">' + options.map(v => '<option value="' + esc(v) + '"' + (v === selected ? ' selected' : '') + '>' + esc(v || 'Default') + '</option>').join('') + '</select>';
+    }
     function renderMappings() {
       const map = (state.config && state.config.modelMap) || {};
       const aliases = Array.from(new Set([...state.aliases, ...Object.keys(map)]));
@@ -810,14 +855,16 @@ function guiHtml() {
         $('mappingRows').innerHTML = '<tr class="empty-row"><td colspan="4">No mappings yet. Add below or click "Test &amp; Load Models".</td></tr>';
         return;
       }
-      $('mappingRows').innerHTML = aliases.map(alias =>
-        '<tr data-alias="' + esc(alias) + '">' +
+      $('mappingRows').innerHTML = aliases.map(alias => {
+        const entry = map[alias] || '';
+        return '<tr data-alias="' + esc(alias) + '">' +
         '<td class="alias-cell">' + esc(alias) + '</td>' +
         '<td class="arrow-cell">\u2192</td>' +
-        '<td>' + makeModelCell(alias, map[alias] || '') + '</td>' +
+        '<td>' + makeModelCell(alias, mappingModelValue(entry)) + '</td>' +
+        '<td>' + makeReasoningCell(mappingReasoningValue(entry)) + '</td>' +
         '<td><button class="danger" data-remove="' + esc(alias) + '">\u2715 Remove</button></td>' +
-        '</tr>'
-      ).join('');
+        '</tr>';
+      }).join('');
       document.querySelectorAll('[data-remove]').forEach(btn => {
         btn.addEventListener('click', () => {
           if (state.config) delete state.config.modelMap[btn.dataset.remove];
@@ -1034,7 +1081,7 @@ async function runGui(options) {
         const body = await readRequestJson(req);
         const current = readConfig();
         const modelMap = body.modelMap && typeof body.modelMap === "object" && !Array.isArray(body.modelMap)
-          ? Object.fromEntries(Object.entries(body.modelMap).filter(([k, v]) => k && v).map(([k, v]) => [String(k).trim(), String(v).trim()]))
+          ? normalizeModelMap(body.modelMap)
           : current.modelMap;
         const next = {
           ...current,
@@ -1746,33 +1793,39 @@ function extractModelFromUrl(url) {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-function getMappedModel(model, options) {
+function getMappedEntry(model, options) {
   if (!model) return null;
-  if (options.model) return options.model;
-  if (options.modelMap && options.modelMap[model]) return options.modelMap[model];
+  if (options.model) return { model: options.model };
+  if (options.modelMap && options.modelMap[model]) return normalizeMappingEntry(options.modelMap[model]);
 
   if (options.modelMap) {
     const prefixKey = Object.keys(options.modelMap).find((key) => {
-      const target = options.modelMap[key];
+      const target = normalizeMappingEntry(options.modelMap[key]);
       return key && target && (model.startsWith(key) || key.startsWith(model));
     });
-    if (prefixKey) return options.modelMap[prefixKey];
+    if (prefixKey) return normalizeMappingEntry(options.modelMap[prefixKey]);
   }
 
   try {
     const dbFile = path.join(os.homedir(), ".9router", "db.json");
     const db = JSON.parse(fs.readFileSync(dbFile, "utf-8"));
     const aliases = db.mitmAlias?.antigravity || {};
-    if (aliases[model]) return aliases[model];
+    if (aliases[model]) return normalizeMappingEntry(aliases[model]);
     const prefixKey = Object.keys(aliases).find((key) => {
-      const target = aliases[key];
+      const target = normalizeMappingEntry(aliases[key]);
       return key && target && (model.startsWith(key) || key.startsWith(model));
     });
-    return prefixKey ? aliases[prefixKey] : null;
+    return prefixKey ? normalizeMappingEntry(aliases[prefixKey]) : null;
   } catch {
     return null;
   }
 }
+
+function getMappedModel(model, options) {
+  const entry = getMappedEntry(model, options);
+  return entry ? entry.model : null;
+}
+
 
 function modelDisplayName(alias, mappedModel) {
   const names = {
@@ -1799,7 +1852,7 @@ function buildAntigravityModelList(options) {
   const models = {};
 
   for (const alias of aliases) {
-    const mappedModel = modelMap[alias] || getMappedModel(alias, options) || "";
+    const mappedModel = mappingModel(modelMap[alias]) || getMappedModel(alias, options) || "";
     models[alias] = {
       id: alias,
       name: alias,
@@ -2008,11 +2061,12 @@ async function runProxy(options) {
     forwardReq.end();
   }
 
-  async function intercept(req, res, bodyBuffer, mappedModel) {
+  async function intercept(req, res, bodyBuffer, mappedEntry) {
     try {
       const body = JSON.parse(bodyBuffer.toString());
       const originalModel = body.model;
-      if (mappedModel) body.model = mappedModel;
+      if (mappedEntry && mappedEntry.model) body.model = mappedEntry.model;
+      if (mappedEntry && mappedEntry.reasoning_effort) body.reasoning_effort = mappedEntry.reasoning_effort;
 
       const headers = buildRouterHeaders(req.headers, options.apiKey);
 
@@ -2060,7 +2114,9 @@ async function runProxy(options) {
       }
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(`OK ${mappedModel || originalModel || "unknown"} - ${elapsed}s`);
+      const loggedModel = mappedEntry && mappedEntry.model ? mappedEntry.model : originalModel;
+      const reasoning = mappedEntry && mappedEntry.reasoning_effort ? ` reasoning_effort=${mappedEntry.reasoning_effort}` : "";
+      console.log(`OK ${loggedModel || "unknown"}${reasoning} - ${elapsed}s`);
     } catch (error) {
       console.error(`ERROR ${error.message}`);
       if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
@@ -2097,19 +2153,23 @@ async function runProxy(options) {
     if (!isChatRequest) return passthrough(req, res, bodyBuffer);
 
     const model = extractModelFromBody(bodyBuffer) || extractModelFromUrl(req.url);
-    const mappedModel = getMappedModel(model, options);
-    let effectiveModel = mappedModel;
+    const mappedEntry = getMappedEntry(model, options);
+    const mappedModel = mappedEntry ? mappedEntry.model : null;
+    let effectiveEntry = mappedEntry;
 
-    if (!effectiveModel && options.modelPrefix && model && !model.includes("/")) {
-      effectiveModel = `${options.modelPrefix}${model}`;
+    if (!effectiveEntry && options.modelPrefix && model && !model.includes("/")) {
+      effectiveEntry = { model: `${options.modelPrefix}${model}` };
     }
 
-    if (!options.alwaysIntercept && !mappedModel) return passthrough(req, res, bodyBuffer);
+    if (!options.alwaysIntercept && !mappedEntry) return passthrough(req, res, bodyBuffer);
 
-    if (effectiveModel) console.log(`${model} -> ${effectiveModel}`);
-    else console.log(`${model || "unknown"} -> (no mapping)`);
+    const effectiveModel = effectiveEntry && effectiveEntry.model;
+    if (effectiveModel) {
+      const reasoning = effectiveEntry.reasoning_effort ? ` + reasoning_effort=${effectiveEntry.reasoning_effort}` : "";
+      console.log(`${model} -> ${effectiveModel}${reasoning}`);
+    } else console.log(`${model || "unknown"} -> (no mapping)`);
 
-    return intercept(req, res, bodyBuffer, effectiveModel);
+    return intercept(req, res, bodyBuffer, effectiveEntry);
   });
 
   server.listen(options.port, () => {
