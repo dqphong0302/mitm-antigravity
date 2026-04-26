@@ -1,0 +1,33 @@
+{
+  "name": "mitm-antigravity",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Cross-platform Antigravity MITM app with configurable DNS, endpoint, API key and model mapping",
+  "type": "commonjs",
+  "bin": {
+    "mitm-antigravity": "mitm-oneclick.js",
+    "mitm-oneclick": "mitm-oneclick.js"
+  },
+  "scripts": {
+    "start": "node mitm-oneclick.js start",
+    "status": "node mitm-oneclick.js status",
+    "stop": "node mitm-oneclick.js stop",
+    "check": "node --check mitm-oneclick.js && node --check scripts/build-macos-app.js && node --check scripts/build-windows-portable.js",
+    "build:pkg": "pkg . --targets node18-macos-arm64,node18-macos-x64,node18-win-x64 --out-path dist && node scripts/copy-settings.js",
+    "build:mac-app": "node scripts/build-macos-app.js",
+    "build:win-portable": "node scripts/build-windows-portable.js",
+    "build": "npm run build:pkg && npm run build:mac-app && npm run build:win-portable"
+  },
+  "dependencies": {
+    "selfsigned": "^2.4.1"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "scripts": [
+      "mitm-oneclick.js"
+    ],
+    "outputPath": "dist"
+  }
+}
