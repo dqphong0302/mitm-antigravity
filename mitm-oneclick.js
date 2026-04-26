@@ -627,7 +627,7 @@ function guiHtml() {
     .tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
     .tag.purple { background: rgba(124,111,247,0.18); color: var(--accent); }
     .tabs {
-      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
       padding: 8px; border: 1px solid var(--glass-border); border-radius: 16px;
       background: rgba(255,255,255,0.035); backdrop-filter: blur(12px);
     }
@@ -661,7 +661,8 @@ function guiHtml() {
   </header>
   <main>
     <nav class="tabs" aria-label="Main sections">
-      <button class="tab-btn active" id="tabConfigBtn" data-tab="config" type="button">\u2699 Config &amp; Models</button>
+      <button class="tab-btn active" id="tabConfigBtn" data-tab="config" type="button">\u2699 Config</button>
+      <button class="tab-btn" id="tabMappingBtn" data-tab="mapping" type="button">\uD83D\uDDFA Model Mapping</button>
       <button class="tab-btn" id="tabProxyBtn" data-tab="proxy" type="button">\uD83D\uDCE1 Proxy &amp; System</button>
     </nav>
     <section class="tab-panel active" id="tabConfigPanel" data-panel="config">
@@ -698,6 +699,8 @@ function guiHtml() {
       </div>
       <div id="endpointStatus" class="status" style="margin-top:12px;display:none;"></div>
     </div>
+    </section>
+    <section class="tab-panel" id="tabMappingPanel" data-panel="mapping">
     <div class="card">
       <div class="card-header">
         <div class="card-title">\uD83D\uDDFA Model Mapping <span class="tag purple" id="mappingCount">0 mappings</span></div>
@@ -740,6 +743,7 @@ function guiHtml() {
       </div>
       <div class="row" style="margin-bottom:14px;">
         <button id="startProxyBtn">Start Proxy</button>
+        <button class="secondary" id="stopProxyBtn">Stop Proxy</button>
         <button id="applyDnsBtn">\uD83D\uDEE1 Apply DNS &amp; Cert</button>
         <button class="secondary" id="applyTrustBtn">Apply Antigravity Trust</button>
         <button class="secondary" id="removeDnsBtn">\u2715 Remove DNS</button>
@@ -940,6 +944,7 @@ function guiHtml() {
     }
     function setSystemButtons(disabled) {
       $('startProxyBtn').disabled = disabled;
+      $('stopProxyBtn').disabled = disabled;
       $('applyDnsBtn').disabled = disabled;
       $('applyTrustBtn').disabled = disabled;
       $('removeDnsBtn').disabled = disabled;
@@ -953,6 +958,23 @@ function guiHtml() {
           body: JSON.stringify({ sudoPassword: $('sudoPassword').value })
         });
         showSystemStatus(result.alreadyRunning ? '\u2713 Proxy already running' : '\u2713 Proxy started on port 443', 'ok');
+        loadStatus();
+      } catch (e) {
+        showSystemStatus('\u2717 ' + e.message, 'err');
+      } finally {
+        $('sudoPassword').value = '';
+        setSystemButtons(false);
+      }
+    }
+    async function stopProxy() {
+      setSystemButtons(true);
+      showSystemStatus('Stopping proxy\u2026', 'loading');
+      try {
+        const result = await api('/api/stop-proxy', {
+          method: 'POST',
+          body: JSON.stringify({ sudoPassword: $('sudoPassword').value })
+        });
+        showSystemStatus(result.stopped ? '\u2713 Proxy stopped' : '\u2713 Proxy was not running', 'ok');
         loadStatus();
       } catch (e) {
         showSystemStatus('\u2717 ' + e.message, 'err');
@@ -1018,6 +1040,7 @@ function guiHtml() {
     $('saveBtn').addEventListener('click', save);
     $('refreshStatusBtn').addEventListener('click', loadStatus);
     $('startProxyBtn').addEventListener('click', startProxy);
+    $('stopProxyBtn').addEventListener('click', stopProxy);
     $('applyDnsBtn').addEventListener('click', applyDns);
     $('applyTrustBtn').addEventListener('click', applyTrust);
     $('removeDnsBtn').addEventListener('click', removeDns);
@@ -1113,6 +1136,19 @@ async function runGui(options) {
         const cfg = readConfig();
         const sudoPassword = String(body.sudoPassword || "");
         const result = await startProxyDetached({
+          sudoPassword,
+          port: Number(cfg.port || options.port || 443),
+          targetHost: primaryTargetHost(cfg),
+        });
+        sendJson(res, 200, result);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/stop-proxy") {
+        const body = await readRequestJson(req);
+        const cfg = readConfig();
+        const sudoPassword = String(body.sudoPassword || "");
+        const result = await stopProxyByPort({
           sudoPassword,
           port: Number(cfg.port || options.port || 443),
           targetHost: primaryTargetHost(cfg),
@@ -1455,6 +1491,23 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
   }
 
   return { started: true, alreadyRunning: false, port, logPath };
+}
+
+async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET }) {
+  if (!(await checkProxyHealth(port, targetHost)) && !(await isPortListening(port))) {
+    return { stopped: false, alreadyStopped: true, port };
+  }
+
+  if (IS_WIN) {
+    await execPowerShell(`$port=${Number(port)}; Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force }`, { elevated: true });
+  } else {
+    if (!isRoot() && !sudoPassword) throw new Error("Missing sudo password");
+    const command = `pids=$(lsof -ti tcp:${Number(port)} -sTCP:LISTEN 2>/dev/null || true); [ -z "$pids" ] || kill $pids`;
+    await execWithSudo(command, sudoPassword);
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  return { stopped: !(await isPortListening(port)), port };
 }
 
 async function generateCert(targetHostOrHosts, { force = false } = {}) {
@@ -2304,8 +2357,9 @@ async function main() {
   }
 
   if (cmd === "stop") {
-    const result = await removeDNSEntries({ targetHosts: targetHostsFrom(options), sudoPassword: options.sudoPassword });
-    console.log(JSON.stringify(result, null, 2));
+    const proxy = await stopProxyByPort({ port: options.port, targetHost: primaryTargetHost(options), sudoPassword: options.sudoPassword });
+    const dns = await removeDNSEntries({ targetHosts: targetHostsFrom(options), sudoPassword: options.sudoPassword });
+    console.log(JSON.stringify({ proxy, dns }, null, 2));
     return;
   }
 
