@@ -51,7 +51,7 @@ const DEFAULT_CONFIG = {
   modelPrefix: "ag/",
   alwaysIntercept: false,
   mockModelList: false,
-  modelMap: Object.fromEntries(ANTIGRAVITY_ALIASES.map((alias) => [alias, `ag/${alias}`])),
+  modelMap: Object.fromEntries(ANTIGRAVITY_ALIASES.map((alias) => [alias, PRESET_9ROUTER_MODEL])),
   maxRetries: 5,
   retryDelay: 1000,
   retryBackoff: 1.5,
@@ -150,8 +150,12 @@ function runtimeDir() {
   return path.dirname(__filename);
 }
 
-function settingsPath() {
+function bundledSettingsPath() {
   return path.join(runtimeDir(), "settings.json");
+}
+
+function settingsPath() {
+  return path.join(appDir(), "settings.json");
 }
 
 function machineId() {
@@ -204,7 +208,9 @@ function normalizeSettings(raw) {
 }
 
 function readSettings() {
-  return normalizeSettings(readJsonFile(settingsPath()));
+  const primary = readJsonFile(settingsPath());
+  if (primary) return normalizeSettings(primary);
+  return normalizeSettings(readJsonFile(bundledSettingsPath()));
 }
 
 function currentMachineConfig(settings) {
@@ -215,7 +221,7 @@ function currentMachineConfig(settings) {
 function readConfig() {
   try {
     const legacyConfig = readJsonFile(configPath()) || {};
-    const settings = fs.existsSync(settingsPath()) ? readSettings() : { activeMachine: machineId(), machines: {} };
+    const settings = readSettings();
     return mergeConfig(mergeConfig(DEFAULT_CONFIG, legacyConfig), currentMachineConfig(settings));
   } catch (error) {
     throw new Error(`Invalid config. settings=${settingsPath()} legacy=${configPath()}: ${error.message}`);
@@ -234,10 +240,11 @@ function mergeConfig(base, override) {
 }
 
 function writeConfig(config) {
-  const settings = fs.existsSync(settingsPath()) ? readSettings() : { activeMachine: machineId(), machines: {} };
+  const settings = readSettings();
   const id = machineId();
   settings.activeMachine = id;
   settings.machines[id] = mergeConfig(DEFAULT_CONFIG, config);
+  ensureAppDir();
   fs.writeFileSync(settingsPath(), `${JSON.stringify(settings, null, 2)}\n`);
 }
 
@@ -328,6 +335,7 @@ async function handleConfigCommand(args) {
   if (action === "paths") {
     console.log(JSON.stringify({
       settingsPath: settingsPath(),
+      bundledSettingsPath: bundledSettingsPath(),
       legacyConfigPath: configPath(),
       machine: machineId(),
     }, null, 2));
@@ -605,7 +613,11 @@ function guiHtml() {
     th { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; padding: 8px 10px; text-align: left; }
     td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: middle; }
     tr:last-child td { border-bottom: none; }
-    td.alias-cell { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent2); width: 36%; }
+    td.alias-cell { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent2); width: 28%; }
+    td.model-cell { min-width: 280px; }
+    td.reasoning-cell { width: 180px; }
+    td.reasoning-cell select { border-color: rgba(56,189,248,0.35); background: rgba(56,189,248,0.08); }
+    td.reasoning-cell::before { content: 'Reasoning effort'; display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.45px; }
     td.arrow-cell { width: 5%; color: var(--muted); text-align: center; }
     .empty-row td { color: var(--muted); text-align: center; padding: 24px; font-size: 13px; }
     .status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
@@ -817,7 +829,7 @@ function guiHtml() {
       const out = {};
       document.querySelectorAll('[data-alias]').forEach((row) => {
         const alias = row.dataset.alias;
-        const sel = row.querySelector('select');
+        const sel = row.querySelector('select.model-select');
         const inp = row.querySelector('input.custom-model');
         const value = sel ? sel.value.trim() : (inp ? inp.value.trim() : '');
         const reasoning = (row.querySelector('select.reasoning-effort') || {}).value || '';
@@ -834,7 +846,7 @@ function guiHtml() {
       if (state.models.length > 0) {
         const vals = Array.from(new Set(['', selected, ...state.models].filter(v => v !== undefined)));
         const opts = vals.map(v => '<option value="' + esc(v) + '"' + (v === selected ? ' selected' : '') + '>' + esc(v || 'No mapping') + '</option>').join('');
-        return '<select>' + opts + '</select>';
+        return '<select class="model-select">' + opts + '</select>';
       }
       return '<input class="custom-model" value="' + esc(selected) + '" placeholder="e.g. cx/gpt-5.5">';
     }
@@ -849,14 +861,14 @@ function guiHtml() {
     }
     function makeReasoningCell(selected) {
       const options = ['', 'minimal', 'low', 'medium', 'high'];
-      return '<select class="reasoning-effort">' + options.map(v => '<option value="' + esc(v) + '"' + (v === selected ? ' selected' : '') + '>' + esc(v || 'Default') + '</option>').join('') + '</select>';
+      return '<select class="reasoning-effort" title="Reasoning effort"><option value=""' + (selected === '' ? ' selected' : '') + '>Default reasoning</option>' + options.slice(1).map(v => '<option value="' + esc(v) + '"' + (v === selected ? ' selected' : '') + '>' + esc(v) + '</option>').join('') + '</select>';
     }
     function renderMappings() {
       const map = (state.config && state.config.modelMap) || {};
       const aliases = Array.from(new Set([...state.aliases, ...Object.keys(map)]));
       $('mappingCount').textContent = aliases.length + ' mapping' + (aliases.length !== 1 ? 's' : '');
       if (aliases.length === 0) {
-        $('mappingRows').innerHTML = '<tr class="empty-row"><td colspan="4">No mappings yet. Add below or click "Test &amp; Load Models".</td></tr>';
+        $('mappingRows').innerHTML = '<tr class="empty-row"><td colspan="5">No mappings yet. Add below or click "Test &amp; Load Models".</td></tr>';
         return;
       }
       $('mappingRows').innerHTML = aliases.map(alias => {
@@ -864,8 +876,8 @@ function guiHtml() {
         return '<tr data-alias="' + esc(alias) + '">' +
         '<td class="alias-cell">' + esc(alias) + '</td>' +
         '<td class="arrow-cell">\u2192</td>' +
-        '<td>' + makeModelCell(alias, mappingModelValue(entry)) + '</td>' +
-        '<td>' + makeReasoningCell(mappingReasoningValue(entry)) + '</td>' +
+        '<td class="model-cell">' + makeModelCell(alias, mappingModelValue(entry)) + '</td>' +
+        '<td class="reasoning-cell">' + makeReasoningCell(mappingReasoningValue(entry)) + '</td>' +
         '<td><button class="danger" data-remove="' + esc(alias) + '">\u2715 Remove</button></td>' +
         '</tr>';
       }).join('');
@@ -1065,7 +1077,7 @@ function guiHtml() {
       if (!alias) return;
       if (state.config) state.config.modelMap = readMappings();
       else state.config = { modelMap: {} };
-      if (!state.config.modelMap[alias]) state.config.modelMap[alias] = '';
+      if (!state.config.modelMap[alias]) state.config.modelMap[alias] = PRESET_9ROUTER_MODEL;
       if (!state.aliases.includes(alias)) state.aliases.push(alias);
       $('newAlias').value = '';
       renderMappings();
@@ -1092,6 +1104,7 @@ async function runGui(options) {
         sendJson(res, 200, {
           config: readConfig(),
           configPath: settingsPath(),
+          bundledSettingsPath: bundledSettingsPath(),
           legacyConfigPath: configPath(),
           machine: machineId(),
           antigravityAliases: ANTIGRAVITY_ALIASES,
@@ -2338,6 +2351,7 @@ async function main() {
       nodeTrustValue: nodeTrust.value,
       redirectIp: Object.fromEntries(targetHosts.map((host) => [host, getRedirectIPs(host)])),
       settingsPath: settingsPath(),
+      bundledSettingsPath: bundledSettingsPath(),
       legacyConfigPath: configPath(),
       machine: machineId(),
       targetHosts,

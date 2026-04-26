@@ -12,16 +12,21 @@
     "start": "node mitm-oneclick.js start",
     "status": "node mitm-oneclick.js status",
     "stop": "node mitm-oneclick.js stop",
-    "check": "node --check mitm-oneclick.js && node --check scripts/build-macos-app.js && node --check scripts/build-windows-portable.js",
+    "check": "node --check mitm-oneclick.js && node --check scripts/build-macos-app.js && node --check scripts/build-windows-portable.js && node --check scripts/prepare-tauri.js",
     "build:pkg": "pkg . --targets node18-macos-arm64,node18-macos-x64,node18-win-x64 --out-path dist && node scripts/copy-settings.js",
     "build:mac-app": "node scripts/build-macos-app.js",
     "build:win-portable": "node scripts/build-windows-portable.js",
-    "build": "npm run build:pkg && npm run build:mac-app && npm run build:win-portable"
+    "build": "npm run build:pkg && npm run build:mac-app && npm run build:win-portable",
+    "tauri:prepare": "node scripts/prepare-tauri.js",
+    "tauri:prepare:dev": "npm run build:pkg && node scripts/prepare-tauri.js",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "npm run build:pkg && tauri build"
   },
   "dependencies": {
     "selfsigned": "^2.4.1"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
     "pkg": "^5.8.1"
   },
   "pkg": {

@@ -164,6 +164,7 @@ You can also run individual packaging steps:
 npm run build:pkg
 npm run build:mac-app
 npm run build:win-portable
+npm run tauri:build
 ```
 
 Outputs are written to `dist/` for:
@@ -175,10 +176,17 @@ Outputs are written to `dist/` for:
 - macOS Intel app: `MITM Antigravity-x64.app`
 - Windows portable app folder: `MITM Antigravity Windows/`
 
-Double-click a generated `.app` on macOS to start the local GUI. On Windows, open `MITM Antigravity Windows/` and double-click `Launch MITM Antigravity.bat`.
+The legacy app launchers still open the local browser GUI. For a native desktop window, build the Tauri app:
 
-The built binary reads and writes `settings.json` next to the binary. The macOS `.app` bundles include `settings.json` under `Contents/Resources`; the Windows portable folder includes `settings.json` beside `MITM Antigravity.exe`. Certificates are kept in the user's home directory under `.mitm-antigravity`.
-By default, `npm run build` strips `apiKey` from `dist/settings.json`, macOS app resources, and the Windows portable folder so packaged builds do not carry your local secret. Set `MITM_COPY_SETTINGS_WITH_SECRETS=true` only for a private build where you explicitly want to copy the key.
+```bash
+npm run tauri:build
+```
+
+The Tauri app starts the bundled backend with `gui --no-open` and displays `http://127.0.0.1:20245/` inside a native desktop window. The bundled backend resource also receives a stripped `settings.json` by default, so packaged builds do not carry your local API key.
+
+Runtime settings are saved persistently under the user profile at `~/.mitm-antigravity/settings.json`. A bundled or local `settings.json` is only used as a first-run fallback/import source, so app updates or moving the app bundle should not delete your saved configuration.
+Certificates are kept in the user's home directory under `.mitm-antigravity`.
+By default, `npm run build` and `npm run tauri:build` strip `apiKey` from packaged settings so packaged builds do not carry your local secret. Set `MITM_COPY_SETTINGS_WITH_SECRETS=true` only for a private build where you explicitly want to copy the key.
 
 ## Notes
 

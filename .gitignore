@@ -4,3 +4,5 @@ settings.json
 *.log
 .DS_Store
 gui_current_state.png
+src-tauri/target/
+src-tauri/resources/settings.json

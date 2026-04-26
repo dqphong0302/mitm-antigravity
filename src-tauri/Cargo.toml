@@ -1,0 +1,12 @@
+[package]
+name = "mitm-antigravity-tauri"
+version = "0.2.0"
+description = "MITM Antigravity native desktop shell"
+authors = ["MITM Antigravity"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
