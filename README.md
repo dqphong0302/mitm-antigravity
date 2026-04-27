@@ -189,6 +189,8 @@ Certificates are kept in the user's home directory under `.mitm-antigravity`.
 
 The Tauri app's `Proxy & System` tab includes `Start Proxy`, `Stop Proxy`, `Enable Auto Start`, and `Disable Auto Start` controls. Auto-start runs `start --skip-setup` after user login using a macOS LaunchAgent, Windows Scheduled Task, or Linux user systemd service. Run `Apply DNS & Cert` once before relying on auto-start so the OS trust/DNS setup is already in place.
 
+The GUI never asks for or stores your sudo password. Privileged actions use the operating system's native administrator prompt when elevation is needed.
+
 The `Model Mapping` tab is now for custom model aliases. Built-in Antigravity models passthrough to Google by default unless you create a custom alias or explicit mapping. Use `+ Create custom model` to define the Antigravity-visible name, upstream model such as `cx/gpt-5.5`, and optional `reasoning_effort`. Keep `Expose custom aliases to Antigravity model list` enabled to advertise these custom aliases to Antigravity.
 By default, `npm run build` and `npm run tauri:build` strip `apiKey` from packaged settings so packaged builds do not carry your local secret. Set `MITM_COPY_SETTINGS_WITH_SECRETS=true` only for a private build where you explicitly want to copy the key.
 

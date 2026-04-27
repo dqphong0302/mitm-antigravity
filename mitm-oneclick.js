@@ -760,13 +760,8 @@ function guiHtml() {
         <button class="secondary" id="refreshStatusBtn" style="font-size:12px;padding:5px 12px;min-height:30px;">\u21bb Refresh</button>
       </div>
       <div class="divider"></div>
-      <div class="grid" style="margin-bottom:14px;">
-        <label class="full">Sudo Password
-          <div class="input-wrap">
-            <input id="sudoPassword" type="password" autocomplete="off" placeholder="Required on macOS/Linux">
-            <button class="eye-btn" id="sudoEyeBtn" title="Toggle visibility">\uD83D\uDC41</button>
-          </div>
-        </label>
+      <div style="margin-bottom:14px;font-size:12px;color:var(--muted);">
+        Privileged actions use the operating system prompt when needed. The app never asks for or stores your sudo password.
       </div>
       <div class="row" style="margin-bottom:14px;">
         <button id="startProxyBtn">Start Proxy</button>
@@ -991,14 +986,13 @@ function guiHtml() {
       try {
         const result = await api('/api/start-proxy', {
           method: 'POST',
-          body: JSON.stringify({ sudoPassword: $('sudoPassword').value })
+          body: JSON.stringify({})
         });
         showSystemStatus(result.alreadyRunning ? '\u2713 Proxy already running' : '\u2713 Proxy started on port 443', 'ok');
         loadStatus();
       } catch (e) {
         showSystemStatus('\u2717 ' + e.message, 'err');
       } finally {
-        $('sudoPassword').value = '';
         setSystemButtons(false);
       }
     }
@@ -1008,14 +1002,13 @@ function guiHtml() {
       try {
         const result = await api('/api/stop-proxy', {
           method: 'POST',
-          body: JSON.stringify({ sudoPassword: $('sudoPassword').value })
+          body: JSON.stringify({})
         });
         showSystemStatus(result.stopped ? '\u2713 Proxy stopped' : '\u2713 Proxy was not running', 'ok');
         loadStatus();
       } catch (e) {
         showSystemStatus('\u2717 ' + e.message, 'err');
       } finally {
-        $('sudoPassword').value = '';
         setSystemButtons(false);
       }
     }
@@ -1025,7 +1018,7 @@ function guiHtml() {
       try {
         const result = await api('/api/apply-dns', {
           method: 'POST',
-          body: JSON.stringify({ sudoPassword: $('sudoPassword').value })
+          body: JSON.stringify({})
         });
         const dnsText = result.dns.added ? 'DNS added' : 'DNS already active';
         const certText = result.cert.installed ? 'cert trusted' : 'cert already trusted';
@@ -1035,7 +1028,6 @@ function guiHtml() {
       } catch (e) {
         showSystemStatus('\u2717 ' + e.message, 'err');
       } finally {
-        $('sudoPassword').value = '';
         setSystemButtons(false);
       }
     }
@@ -1058,14 +1050,13 @@ function guiHtml() {
       try {
         const result = await api('/api/remove-dns', {
           method: 'POST',
-          body: JSON.stringify({ sudoPassword: $('sudoPassword').value })
+          body: JSON.stringify({})
         });
         showSystemStatus(result.dns.removed ? '\u2713 DNS removed' : '\u2713 DNS was not active', 'ok');
         loadStatus();
       } catch (e) {
         showSystemStatus('\u2717 ' + e.message, 'err');
       } finally {
-        $('sudoPassword').value = '';
         setSystemButtons(false);
       }
     }
@@ -1110,10 +1101,6 @@ function guiHtml() {
     $('disableAutoStartBtn').addEventListener('click', disableAutoStartUi);
     $('eyeBtn').addEventListener('click', () => {
       const inp = $('apiKey');
-      inp.type = inp.type === 'password' ? 'text' : 'password';
-    });
-    $('sudoEyeBtn').addEventListener('click', () => {
-      const inp = $('sudoPassword');
       inp.type = inp.type === 'password' ? 'text' : 'password';
     });
     $('presetBtn').addEventListener('click', () => {
@@ -1232,7 +1219,6 @@ async function runGui(options) {
         const targetHosts = targetHostsFrom(cfg);
         const targetHost = targetHosts[0];
         const sudoPassword = String(body.sudoPassword || "");
-        if (!IS_WIN && !isRoot() && !sudoPassword) throw new Error("Missing sudo password");
         const cert = await generateCert(targetHosts, { force: false });
         const certResult = await installCert(cert.cert, targetHost, sudoPassword);
         const nodeTrust = await applyAntigravityNodeTrust(cert.cert);
@@ -1259,7 +1245,6 @@ async function runGui(options) {
         const body = await readRequestJson(req);
         const cfg = readConfig();
         const sudoPassword = String(body.sudoPassword || "");
-        if (!IS_WIN && !isRoot() && !sudoPassword) throw new Error("Missing sudo password");
         const dnsResult = await removeDNSEntries({
           targetHosts: targetHostsFrom(cfg),
           sudoPassword,
@@ -1345,26 +1330,33 @@ function shellQuote(value) {
 
 function execWithSudo(command, password) {
   if (isRoot()) return execPromise(command);
-  if (!password) return Promise.reject(new Error("Missing sudo password"));
+  if (password) {
+    return new Promise((resolve, reject) => {
+      const child = spawn("sudo", ["-S", "sh", "-c", command], {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
 
-  return new Promise((resolve, reject) => {
-    const child = spawn("sudo", ["-S", "sh", "-c", command], {
-      stdio: ["pipe", "pipe", "pipe"],
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => { stdout += d; });
+      child.stderr.on("data", (d) => { stderr += d; });
+
+      child.on("close", (code) => {
+        if (code === 0) resolve(stdout);
+        else reject(new Error(stderr || `Exit code ${code}`));
+      });
+
+      child.stdin.write(`${password}\n`);
+      child.stdin.end();
     });
+  }
 
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => { stdout += d; });
-    child.stderr.on("data", (d) => { stderr += d; });
+  if (IS_MAC) {
+    const script = `do shell script ${JSON.stringify(command)} with administrator privileges`;
+    return execPromise(`osascript -e ${shellQuote(script)}`);
+  }
 
-    child.on("close", (code) => {
-      if (code === 0) resolve(stdout);
-      else reject(new Error(stderr || `Exit code ${code}`));
-    });
-
-    child.stdin.write(`${password}\n`);
-    child.stdin.end();
-  });
+  return execPromise(`sudo sh -c ${shellQuote(command)}`);
 }
 
 function execPowerShell(script, { elevated = false } = {}) {
@@ -1544,8 +1536,6 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
     throw new Error(`Port ${port} is already in use by another service`);
   }
 
-  if (!IS_WIN && !isRoot() && !sudoPassword) throw new Error("Missing sudo password");
-
   const logPath = path.join(os.tmpdir(), "mitm-antigravity-proxy.log");
   const nodeCommand = process.pkg
     ? shellQuote(process.execPath)
@@ -1600,8 +1590,6 @@ async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET
   if (!(await checkProxyHealth(port, targetHost)) && !(await isPortListening(port))) {
     return { stopped: false, wasRunning: false, port };
   }
-
-  if (!IS_WIN && !isRoot() && !sudoPassword) throw new Error("Missing sudo password");
 
   if (IS_WIN) {
     const pids = await pidsListeningOnPortWindows(port);
