@@ -39,6 +39,48 @@ fn backend_resource_name() -> &'static str {
     }
 }
 
+fn cleanup_stale_backend_port() {
+    let _ = std::net::TcpStream::connect("127.0.0.1:20245").map(|stream| drop(stream));
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("lsof -ti tcp:20245 | xargs kill 2>/dev/null || true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        thread::sleep(Duration::from_millis(350));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("fuser -k 20245/tcp 2>/dev/null || true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        thread::sleep(Duration::from_millis(350));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("cmd")
+            .args([
+                "/C",
+                "for /f \"tokens=5\" %a in ('netstat -ano ^| findstr :20245') do taskkill /PID %a /F",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        thread::sleep(Duration::from_millis(350));
+    }
+}
+
 fn start_backend(app: &tauri::App) -> Result<BackendProcess, String> {
     let backend = resource_path(app, backend_resource_name())?;
     let backend_log = backend_log_path();
@@ -87,6 +129,7 @@ fn wait_for_gui() -> bool {
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
+            cleanup_stale_backend_port();
             let backend = start_backend(app)?;
             app.manage(backend);
             if let Some(window) = app.get_webview_window("main") {

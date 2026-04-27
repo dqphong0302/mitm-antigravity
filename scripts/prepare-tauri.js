@@ -20,7 +20,8 @@ function stripSecrets(settings) {
             machine.apiKey = "";
             machine.routerUrl = "";
             machine.model = "";
-            machine.modelPrefix = "ag/";
+            machine.modelPrefix = "";
+            machine.mockModelList = false;
             machine.modelMap = {};
         }
     }

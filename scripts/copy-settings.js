@@ -18,7 +18,8 @@ if (settings.machines && typeof settings.machines === "object") {
         machineConfig.apiKey = "";
         machineConfig.routerUrl = "";
         machineConfig.model = "";
-        machineConfig.modelPrefix = "ag/";
+        machineConfig.modelPrefix = "";
+        machineConfig.mockModelList = false;
         machineConfig.modelMap = {};
       }
     }

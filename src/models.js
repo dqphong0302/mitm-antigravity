@@ -1,23 +1,26 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const zlib = require("zlib");
 
 const {
   ANTIGRAVITY_ALIASES,
   DEFAULT_MODEL_PREFIX,
   LEGACY_DEFAULT_MODEL_MAP,
+  MAPPABLE_ANTIGRAVITY_ALIASES,
 } = require("./constants");
-const { sendJson } = require("./http");
 
 const ANTIGRAVITY_ALIAS_SET = new Set(ANTIGRAVITY_ALIASES);
-const MODEL_ID_LIST_FIELDS = [
-  "commandModelIds",
-  "commitMessageModelIds",
-];
-const CUSTOM_MODEL_ENUM_PREFIX = "PLACEHOLDER_M";
-const CUSTOM_MODEL_ENUM_BASE = 1000;
-const CUSTOM_MODEL_ENUM_LIMIT = 151;
+const MAPPABLE_ALIAS_SET = new Set(MAPPABLE_ANTIGRAVITY_ALIASES);
+const BUILTIN_MODEL_VALUE_ALIASES = new Map([
+  ["MODEL_PLACEHOLDER_M37", "gemini-3.1-pro-high"],
+  ["MODEL_PLACEHOLDER_M36", "gemini-3.1-pro-low"],
+  ["MODEL_PLACEHOLDER_M18", "gemini-3-flash"],
+  ["MODEL_PLACEHOLDER_M35", "claude-sonnet-4-6"],
+  ["MODEL_PLACEHOLDER_M26", "claude-opus-4-6-thinking"],
+  ["291", "claude-opus-4-6-thinking"],
+  ["MODEL_OPENAI_GPT_OSS_120B_MEDIUM", "gpt-oss-120b-medium"],
+  ["342", "gpt-oss-120b-medium"],
+]);
 
 const MODEL_FIELD_NAMES = new Set([
   "model",
@@ -70,10 +73,13 @@ function mappingModel(entry) {
 
 function normalizeModelMap(modelMap) {
   if (!modelMap || typeof modelMap !== "object" || Array.isArray(modelMap)) return {};
-  return stripLegacyDefaultMappings(Object.fromEntries(Object.entries(modelMap)
+  const normalized = Object.fromEntries(Object.entries(modelMap)
     .map(([key, value]) => [String(key).trim(), normalizeMappingEntry(value)])
-    .filter(([key, value]) => key && value && !isGeneratedBuiltInPrefixMapping(key, value))
-    .map(([key, value]) => [key, value.reasoning_effort ? value : value.model])));
+    .filter(([key, value]) => key && value));
+  const stripped = stripLegacyDefaultMappings(normalized);
+  return Object.fromEntries(Object.entries(stripped)
+    .filter(([key, value]) => MAPPABLE_ALIAS_SET.has(key) && !isGeneratedBuiltInPrefixMapping(key, value))
+    .map(([key, value]) => [key, value.reasoning_effort ? value : value.model]));
 }
 
 function isGeneratedBuiltInPrefixMapping(alias, entry) {
@@ -147,35 +153,6 @@ function looksLikeModelId(value) {
   return /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/.test(text);
 }
 
-function customModelAliases(options = {}) {
-  return Object.keys(options.modelMap || {}).filter((alias) => {
-    return alias && !ANTIGRAVITY_ALIAS_SET.has(alias);
-  });
-}
-
-function customModelEnumForAlias(alias, options = {}) {
-  const index = customModelAliases(options).indexOf(alias);
-  if (index < 0 || index >= CUSTOM_MODEL_ENUM_LIMIT) return "";
-  return `${CUSTOM_MODEL_ENUM_PREFIX}${index}`;
-}
-
-function customAliasForModelEnum(model, options = {}) {
-  const aliases = customModelAliases(options);
-  if (aliases.length === 0) return "";
-
-  const value = String(model || "").trim();
-  const alias = modelAliasFromName(value);
-  const match = alias.match(/^PLACEHOLDER_M(\d+)$/i);
-  if (match) return aliases[Number(match[1])] || "";
-
-  if (/^\d+$/.test(alias)) {
-    const index = Number(alias) - CUSTOM_MODEL_ENUM_BASE;
-    return aliases[index] || "";
-  }
-
-  return "";
-}
-
 function normalizedModelFieldName(key) {
   return String(key || "").replace(/[-\s]/g, "_").toLowerCase();
 }
@@ -197,7 +174,7 @@ function modelNameCandidates(model) {
   const values = [];
   const raw = String(model || "").trim();
   const alias = modelAliasFromName(raw);
-  for (const item of [raw, alias]) {
+  for (const item of [raw, alias, builtInAliasForModel(raw), builtInAliasForModel(alias)]) {
     if (item && !values.includes(item)) values.push(item);
   }
   return values;
@@ -210,6 +187,16 @@ function collectModelCandidates(value, pathPrefix = "", output = [], depth = 0) 
     return output;
   }
   if (typeof value !== "object") return output;
+
+  const choice = value.choice;
+  if (choice && typeof choice === "object") {
+    const caseName = String(choice.case || "").toLowerCase();
+    if ((caseName === "model" || caseName === "alias")
+      && (typeof choice.value === "string" || typeof choice.value === "number")
+      && looksLikeModelId(choice.value)) {
+      output.push({ path: `${pathPrefix ? `${pathPrefix}.` : ""}choice.${caseName}`, value: String(choice.value).trim() });
+    }
+  }
 
   for (const [key, child] of Object.entries(value)) {
     const pathKey = pathPrefix ? `${pathPrefix}.${key}` : key;
@@ -239,39 +226,36 @@ function extractModelFromBody(body) {
   return candidates.length > 0 ? candidates[0].value : null;
 }
 
-function summarizeRequestBodyForLog(body) {
-  const parsed = parseJsonBody(body);
-  if (!parsed || typeof parsed !== "object") return `bodyBytes=${Buffer.isBuffer(body) ? body.length : String(body || "").length} body=unparseable`;
-  const keys = Array.isArray(parsed) ? ["array"] : Object.keys(parsed).slice(0, 20);
-  const models = collectModelCandidates(parsed)
-    .map((item) => `${item.path}=${item.value}`)
-    .slice(0, 8);
-  return `bodyKeys=${keys.join(",") || "-"} modelCandidates=${models.join(",") || "-"}`;
-}
-
 function extractModelFromUrl(url) {
   const match = String(url).match(/\/models\/([^/:?]+):(generateContent|streamGenerateContent)/);
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+function builtInAliasForModel(model) {
+  const value = String(model || "").trim();
+  const alias = modelAliasFromName(value);
+  if (MAPPABLE_ALIAS_SET.has(value)) return value;
+  if (MAPPABLE_ALIAS_SET.has(alias)) return alias;
+  return BUILTIN_MODEL_VALUE_ALIASES.get(value) || BUILTIN_MODEL_VALUE_ALIASES.get(alias) || "";
+}
+
 function getMappedEntry(model, options) {
   if (!model) return null;
   if (options.model) return { model: options.model };
-  const customAlias = customAliasForModelEnum(model, options);
-  if (customAlias && options.modelMap?.[customAlias]) {
-    return normalizeMappingEntry(options.modelMap[customAlias]);
-  }
+
   const candidates = modelNameCandidates(model);
   if (options.modelMap) {
     for (const candidate of candidates) {
-      if (options.modelMap[candidate]) return normalizeMappingEntry(options.modelMap[candidate]);
+      if (MAPPABLE_ALIAS_SET.has(candidate) && options.modelMap[candidate]) {
+        return normalizeMappingEntry(options.modelMap[candidate]);
+      }
     }
-  }
 
-  if (options.modelMap) {
     const prefixKey = Object.keys(options.modelMap).find((key) => {
       const target = normalizeMappingEntry(options.modelMap[key]);
-      return key && target && candidates.some((candidate) => candidate.startsWith(key) || key.startsWith(candidate));
+      return MAPPABLE_ALIAS_SET.has(key)
+        && target
+        && candidates.some((candidate) => candidate.startsWith(key) || key.startsWith(candidate));
     });
     if (prefixKey) return normalizeMappingEntry(options.modelMap[prefixKey]);
   }
@@ -281,13 +265,9 @@ function getMappedEntry(model, options) {
     const db = JSON.parse(fs.readFileSync(dbFile, "utf-8"));
     const aliases = db.mitmAlias?.antigravity || {};
     for (const candidate of candidates) {
-      if (aliases[candidate]) return normalizeMappingEntry(aliases[candidate]);
+      if (MAPPABLE_ALIAS_SET.has(candidate) && aliases[candidate]) return normalizeMappingEntry(aliases[candidate]);
     }
-    const prefixKey = Object.keys(aliases).find((key) => {
-      const target = normalizeMappingEntry(aliases[key]);
-      return key && target && candidates.some((candidate) => candidate.startsWith(key) || key.startsWith(candidate));
-    });
-    return prefixKey ? normalizeMappingEntry(aliases[prefixKey]) : null;
+    return null;
   } catch {
     return null;
   }
@@ -298,365 +278,6 @@ function getMappedModel(model, options) {
   return entry ? entry.model : null;
 }
 
-function modelDisplayName(alias, mappedModel) {
-  const names = {
-    "gemini-3.1-pro-high": "Gemini 3.1 Pro High",
-    "gemini-3.1-pro-low": "Gemini 3.1 Pro Low",
-    "gemini-3-flash": "Gemini 3 Flash",
-    "claude-sonnet-4-6": "Claude Sonnet 4.6",
-    "claude-opus-4-6-thinking": "Claude Opus 4.6 Thinking",
-    "gpt-oss-120b-medium": "GPT OSS 120B Medium",
-    "gemini-3-pro-high": "Gemini 3 Pro High",
-    "gemini-3-pro-low": "Gemini 3 Pro Low",
-  };
-  const base = names[alias] || alias;
-  return mappedModel ? `${base} (${mappedModel})` : base;
-}
-
-function buildAntigravityModelList(options) {
-  const modelMap = options.modelMap || {};
-  const aliases = Array.from(new Set([
-    ...ANTIGRAVITY_ALIASES,
-    ...Object.keys(modelMap),
-  ].filter(Boolean)));
-  const resetTime = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  const models = {};
-
-  for (const alias of aliases) {
-    const mappedModel = mappingModel(modelMap[alias]) || getMappedModel(alias, options) || "";
-    const modelId = customModelEnumForAlias(alias, options) || alias;
-    models[alias] = {
-      id: alias,
-      name: alias,
-      model: modelId,
-      displayName: modelDisplayName(alias, mappedModel),
-      description: mappedModel ? `Routed to ${mappedModel}` : "Routed by MITM Antigravity",
-      disabled: false,
-      isInternal: false,
-      supportsImages: false,
-      supportsThinking: true,
-      supportedMimeTypes: {},
-      supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
-      quotaInfo: {
-        remainingFraction: 1,
-        resetTime,
-      },
-    };
-  }
-
-  return { models };
-}
-
-function customAntigravityModelList(options, existingModels = {}) {
-  const all = buildAntigravityModelList(options).models;
-  return Object.fromEntries(Object.entries(all).filter(([alias]) => {
-    return !ANTIGRAVITY_ALIAS_SET.has(alias) && !existingModels[alias];
-  }));
-}
-
-function appendUnique(items, additions) {
-  const output = Array.isArray(items) ? [...items] : [];
-  for (const item of additions) {
-    if (item && !output.includes(item)) output.push(item);
-  }
-  return output;
-}
-
-function appendModelIds(payload, aliases) {
-  for (const field of MODEL_ID_LIST_FIELDS) {
-    if (Array.isArray(payload[field])) payload[field] = appendUnique(payload[field], aliases);
-  }
-}
-
-function modelGroupIds(group) {
-  if (!group || typeof group !== "object") return [];
-  if (Array.isArray(group.modelIds)) return group.modelIds;
-  if (Array.isArray(group.model_ids)) return group.model_ids;
-  return [];
-}
-
-function mergeAgentModelSorts(payload, aliases) {
-  if (aliases.length === 0) return;
-  if (!Array.isArray(payload.agentModelSorts)) {
-    payload.agentModelSorts = [{
-      displayName: "Custom",
-      groups: [{ displayName: "Custom", modelIds: aliases }],
-    }];
-    return;
-  }
-
-  const existing = new Set();
-  for (const sort of payload.agentModelSorts) {
-    for (const group of sort?.groups || []) {
-      for (const modelId of modelGroupIds(group)) existing.add(modelId);
-    }
-  }
-
-  const missing = aliases.filter((alias) => !existing.has(alias));
-  if (missing.length === 0) return;
-
-  let targetSort = payload.agentModelSorts.find((sort) => sort && typeof sort === "object" && Array.isArray(sort.groups));
-  if (!targetSort) {
-    targetSort = { displayName: "Custom", groups: [] };
-    payload.agentModelSorts.push(targetSort);
-  }
-
-  let customGroup = targetSort.groups.find((group) => {
-    const name = String(group?.displayName || group?.display_name || "").toLowerCase();
-    return name === "custom" || name === "custom models";
-  });
-  if (!customGroup) {
-    customGroup = { displayName: "Custom", modelIds: [] };
-    targetSort.groups.push(customGroup);
-  }
-
-  const idField = Array.isArray(customGroup.model_ids) && !Array.isArray(customGroup.modelIds)
-    ? "model_ids"
-    : "modelIds";
-  customGroup[idField] = appendUnique(customGroup[idField], missing);
-}
-
-function mergeModelListIndexes(payload, aliases) {
-  appendModelIds(payload, aliases);
-  mergeAgentModelSorts(payload, aliases);
-}
-
-function modelConfigValue(config) {
-  const modelOrAlias = config?.modelOrAlias || config?.model_or_alias;
-  if (!modelOrAlias || typeof modelOrAlias !== "object") return "";
-  const choice = modelOrAlias.choice;
-  if (choice?.case === "model" || choice?.case === "alias") return String(choice.value || "");
-  if (typeof modelOrAlias.model === "string") return modelOrAlias.model;
-  if (typeof modelOrAlias.alias === "string") return modelOrAlias.alias;
-  return "";
-}
-
-function buildClientModelConfig(alias, options) {
-  const mappedModel = mappingModel(options.modelMap?.[alias]) || getMappedModel(alias, options) || "";
-  const modelId = customModelEnumForAlias(alias, options) || alias;
-  const resetTime = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  return {
-    label: modelDisplayName(alias, mappedModel),
-    modelOrAlias: {
-      choice: { case: "model", value: modelId },
-    },
-    disabled: false,
-    supportsImages: false,
-    supportedMimeTypes: {},
-    betaWarningMessage: "",
-    isBeta: false,
-    isRecommended: false,
-    description: mappedModel ? `Routed to ${mappedModel}` : "Routed by MITM Antigravity",
-    quotaInfo: {
-      remainingFraction: 1,
-      resetTime,
-    },
-  };
-}
-
-function appendClientModelSorts(configData, labels) {
-  if (labels.length === 0) return;
-  if (!Array.isArray(configData.clientModelSorts)) {
-    configData.clientModelSorts = [{
-      name: "Custom",
-      groups: [{ groupName: "Custom", modelLabels: labels }],
-    }];
-    return;
-  }
-
-  let targetSort = configData.clientModelSorts.find((sort) => sort && typeof sort === "object" && Array.isArray(sort.groups));
-  if (!targetSort) {
-    targetSort = { name: "Custom", groups: [] };
-    configData.clientModelSorts.push(targetSort);
-  }
-
-  let customGroup = targetSort.groups.find((group) => {
-    const name = String(group?.groupName || group?.group_name || "").toLowerCase();
-    return name === "custom" || name === "custom models";
-  });
-  if (!customGroup) {
-    customGroup = { groupName: "Custom", modelLabels: [] };
-    targetSort.groups.push(customGroup);
-  }
-
-  customGroup.modelLabels = appendUnique(customGroup.modelLabels, labels);
-}
-
-function mergeCascadeModelConfigData(configData, options) {
-  if (!configData || typeof configData !== "object" || Array.isArray(configData)) {
-    return { payload: configData, added: [] };
-  }
-
-  const next = { ...configData };
-  const currentConfigs = Array.isArray(next.clientModelConfigs) ? [...next.clientModelConfigs] : [];
-  const existingLabels = new Set(currentConfigs.map((config) => String(config?.label || "")).filter(Boolean));
-  const existingValues = new Set(currentConfigs.map(modelConfigValue).filter(Boolean));
-  const addedConfigs = [];
-
-  for (const alias of customModelAliases(options)) {
-    const config = buildClientModelConfig(alias, options);
-    const value = modelConfigValue(config);
-    if ((value && existingValues.has(value)) || existingLabels.has(config.label)) continue;
-    currentConfigs.push(config);
-    existingLabels.add(config.label);
-    if (value) existingValues.add(value);
-    addedConfigs.push(config);
-  }
-
-  next.clientModelConfigs = currentConfigs;
-  appendClientModelSorts(next, addedConfigs.map((config) => config.label));
-  return {
-    payload: next,
-    added: addedConfigs.map((config) => config.label),
-  };
-}
-
-function mergeCascadeModelConfigsInPayload(payload, options) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { payload, added: [], paths: [] };
-  }
-
-  let changed = false;
-  const added = [];
-  const paths = [];
-
-  function visit(value, pathParts) {
-    if (!value || typeof value !== "object") return value;
-    if (Array.isArray(value)) {
-      return value.map((item, index) => visit(item, pathParts.concat(String(index))));
-    }
-
-    let next = value;
-    const hasClientConfigData = Array.isArray(value.clientModelConfigs) || Array.isArray(value.clientModelSorts);
-    if (hasClientConfigData) {
-      const merged = mergeCascadeModelConfigData(value, options);
-      if (merged.added.length > 0) {
-        next = merged.payload;
-        changed = true;
-        added.push(...merged.added);
-        paths.push(pathParts.join(".") || "<root>");
-      }
-    }
-
-    let objectChanged = next !== value;
-    let output = objectChanged ? { ...next } : null;
-    for (const [key, child] of Object.entries(next)) {
-      const mergedChild = visit(child, pathParts.concat(key));
-      if (mergedChild !== child) {
-        if (!objectChanged) {
-          output = { ...next };
-          objectChanged = true;
-        }
-        output[key] = mergedChild;
-      }
-    }
-    return objectChanged ? output : value;
-  }
-
-  const nextPayload = visit(payload, []);
-  return {
-    payload: changed ? nextPayload : payload,
-    added: Array.from(new Set(added)),
-    paths,
-  };
-}
-
-function mergeAntigravityModelListPayload(payload, options) {
-  const next = payload && typeof payload === "object" && !Array.isArray(payload)
-    ? { ...payload }
-    : {};
-  const existingModels = next.models && typeof next.models === "object" && !Array.isArray(next.models)
-    ? next.models
-    : {};
-  const additions = customAntigravityModelList(options, existingModels);
-  next.models = {
-    ...existingModels,
-    ...additions,
-  };
-  const added = Object.keys(additions);
-  mergeModelListIndexes(next, added);
-  return {
-    payload: next,
-    added,
-    existingCount: Object.keys(existingModels).length,
-    totalCount: Object.keys(next.models).length,
-  };
-}
-
-function sendAntigravityModelList(res, options) {
-  const payload = buildAntigravityModelList(options);
-  sendJson(res, 200, payload);
-}
-
-function decodeResponseBody(raw, headers = {}) {
-  const encoding = String(headers["content-encoding"] || "").toLowerCase();
-  if (encoding.includes("gzip")) return zlib.gunzipSync(raw);
-  if (encoding.includes("br")) return zlib.brotliDecompressSync(raw);
-  if (encoding.includes("deflate")) return zlib.inflateSync(raw);
-  return raw;
-}
-
-function summarizeAntigravityModelsResponse(raw, headers = {}) {
-  try {
-    const decoded = decodeResponseBody(raw, headers);
-    const data = JSON.parse(decoded.toString("utf8"));
-    const modelKeys = data?.models && typeof data.models === "object"
-      ? Object.keys(data.models)
-      : [];
-    const visible = modelKeys.filter((key) => data.models?.[key]?.isInternal !== true);
-    const summary = {
-      topLevelKeys: data && typeof data === "object" ? Object.keys(data).sort() : [],
-      modelCount: modelKeys.length,
-      visibleCount: visible.length,
-      modelKeys: modelKeys.slice(0, 30),
-      visibleKeys: visible.slice(0, 30),
-      contentEncoding: headers["content-encoding"] || null,
-      hasError: Boolean(data?.error),
-      errorCode: data?.error?.code || data?.code || null,
-      errorStatus: data?.error?.status || data?.status || null,
-    };
-    try {
-      fs.writeFileSync(path.join(os.tmpdir(), "mitm-antigravity-models-summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
-    } catch {
-      // Summary file is best-effort debug output.
-    }
-    return `models=${summary.modelCount} visible=${summary.visibleCount} keys=${summary.visibleKeys.join(",") || summary.modelKeys.join(",") || "-"}`;
-  } catch (error) {
-    return `unparseable=${error.message}`;
-  }
-}
-
-function summarizeCascadeModelConfigs(payload) {
-  const summaries = [];
-
-  function visit(value, pathParts) {
-    if (!value || typeof value !== "object") return;
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => visit(item, pathParts.concat(String(index))));
-      return;
-    }
-    if (Array.isArray(value.clientModelConfigs) || Array.isArray(value.clientModelSorts)) {
-      summaries.push({
-        path: pathParts.join(".") || "<root>",
-        configs: Array.isArray(value.clientModelConfigs) ? value.clientModelConfigs.length : 0,
-        sorts: Array.isArray(value.clientModelSorts) ? value.clientModelSorts.length : 0,
-        labels: Array.isArray(value.clientModelConfigs)
-          ? value.clientModelConfigs.map((config) => config?.label).filter(Boolean).slice(0, 30)
-          : [],
-      });
-    }
-    for (const [key, child] of Object.entries(value)) visit(child, pathParts.concat(key));
-  }
-
-  visit(payload, []);
-  try {
-    fs.writeFileSync(path.join(os.tmpdir(), "mitm-antigravity-cascade-models-summary.json"), `${JSON.stringify(summaries, null, 2)}\n`);
-  } catch {
-    // Summary file is best-effort debug output.
-  }
-  return summaries.map((item) => `${item.path}:configs=${item.configs} labels=${item.labels.join(",") || "-"}`).join(" | ") || "cascadeModels=-";
-}
-
 function normalizePrefix(prefix) {
   if (!prefix) return "";
   const lowered = String(prefix).toLowerCase();
@@ -664,13 +285,27 @@ function normalizePrefix(prefix) {
   return prefix.endsWith("/") ? prefix : `${prefix}/`;
 }
 
+// Re-export from split modules for backward compatibility.
+const {
+  buildAntigravityModelList,
+  mergeAntigravityModelListPayload,
+  mergeCascadeModelConfigData,
+  mergeCascadeModelConfigsInPayload,
+  modelDisplayName,
+  sendAntigravityModelList,
+} = require("./model-list");
+
+const {
+  decodeResponseBody,
+  summarizeAntigravityModelsResponse,
+  summarizeCascadeModelConfigs,
+  summarizeRequestBodyForLog,
+} = require("./model-serialization");
+
 module.exports = {
   buildAntigravityModelList,
-  buildClientModelConfig,
-  customAliasForModelEnum,
-  customAntigravityModelList,
-  customModelAliases,
-  customModelEnumForAlias,
+  builtInAliasForModel,
+  collectModelCandidates,
   decodeResponseBody,
   deriveModelsUrl,
   extractModelFromBody,
@@ -678,6 +313,7 @@ module.exports = {
   fetchAvailableModels,
   getMappedEntry,
   getMappedModel,
+  looksLikeModelId,
   mappingModel,
   modelAliasFromName,
   modelNameCandidates,
@@ -685,11 +321,11 @@ module.exports = {
   mergeAntigravityModelListPayload,
   mergeCascadeModelConfigData,
   mergeCascadeModelConfigsInPayload,
-  mergeModelListIndexes,
   normalizeMappingEntry,
   normalizeModelMap,
   normalizePrefix,
   parseInlineModelMap,
+  parseJsonBody,
   sendAntigravityModelList,
   stripLegacyDefaultMappings,
   summarizeAntigravityModelsResponse,
