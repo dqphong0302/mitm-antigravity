@@ -168,6 +168,40 @@ function redactConfig(config) {
   };
 }
 
+function exportConfig() {
+  const config = readConfig();
+  return {
+    _format: "mitm-antigravity-config",
+    _version: 1,
+    _exportedAt: new Date().toISOString(),
+    _machine: machineId(),
+    routerUrl: config.routerUrl || "",
+    apiKey: config.apiKey || "",
+    model: config.model || "",
+    alwaysIntercept: Boolean(config.alwaysIntercept),
+    modelMap: config.modelMap || {},
+  };
+}
+
+function importConfig(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("Invalid config: must be a JSON object");
+  }
+  const current = readConfig();
+  const next = {
+    ...current,
+    routerUrl: typeof data.routerUrl === "string" ? data.routerUrl.trim() : current.routerUrl,
+    apiKey: typeof data.apiKey === "string" ? data.apiKey : current.apiKey,
+    model: typeof data.model === "string" ? data.model.trim() : current.model,
+    alwaysIntercept: typeof data.alwaysIntercept === "boolean" ? data.alwaysIntercept : current.alwaysIntercept,
+    modelMap: data.modelMap && typeof data.modelMap === "object" && !Array.isArray(data.modelMap)
+      ? normalizeModelMap({ ...current.modelMap, ...data.modelMap })
+      : current.modelMap,
+  };
+  writeConfig(next);
+  return next;
+}
+
 module.exports = {
   appDir,
   bundledSettingsPath,
@@ -175,6 +209,8 @@ module.exports = {
   configPath,
   currentMachineConfig,
   ensureAppDir,
+  exportConfig,
+  importConfig,
   machineId,
   mergeConfig,
   normalizeSettings,

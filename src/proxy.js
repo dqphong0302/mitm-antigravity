@@ -3,163 +3,29 @@ const https = require("https");
 const fs = require("fs");
 const { promisify } = require("util");
 
-const { APP_NAME, DEFAULT_TARGET } = require("./constants");
+const { APP_NAME } = require("./constants");
 const { certPaths } = require("./cert");
 const { primaryTargetHost, targetHostsFrom } = require("./config");
 const { collectBodyRaw, sendJson } = require("./http");
-const { redactText } = require("./logging");
 const {
-  decodeResponseBody,
   extractModelFromBody,
   extractModelFromUrl,
   getMappedEntry,
   modelAliasFromName,
-  summarizeAntigravityModelsResponse,
-  summarizeRequestBodyForLog,
 } = require("./models");
-
-const ROUTER_STRIP_HEADERS = new Set([
-  "host",
-  "content-length",
-  "connection",
-  "transfer-encoding",
-  "content-type",
-  "authorization",
-  "x-9router-source",
-  "x-request-source",
-]);
-
-const CHAT_URL_PATTERNS = [":generateContent", ":streamGenerateContent"];
-const ACCOUNT_BOOTSTRAP_PATTERNS = [
-  ":fetchAdminControls",
-  "/cascadeNuxes",
-  ":loadCodeAssist",
-  ":fetchUserInfo",
-  ":fetchAvailableModels",
-  "/agentPlugins",
-];
-function isChatRequestUrl(reqUrl) {
-  return CHAT_URL_PATTERNS.some((pattern) => String(reqUrl || "").includes(pattern));
-}
-
-function isFetchAvailableModelsRequest(reqUrl) {
-  return String(reqUrl || "").includes(":fetchAvailableModels");
-}
-
-function isFetchUserInfoRequest(reqUrl) {
-  return String(reqUrl || "").includes(":fetchUserInfo");
-}
-
-function isLoadCodeAssistRequest(reqUrl) {
-  return String(reqUrl || "").includes(":loadCodeAssist");
-}
-
-function isModelBootstrapMergeRequest(reqUrl) {
-  return isFetchAvailableModelsRequest(reqUrl)
-    || isFetchUserInfoRequest(reqUrl)
-    || isLoadCodeAssistRequest(reqUrl);
-}
-
-function isAccountBootstrapRequest(reqUrl) {
-  const value = String(reqUrl || "");
-  return ACCOUNT_BOOTSTRAP_PATTERNS.some((pattern) => value.includes(pattern));
-}
-
-function buildRouterHeaders(clientHeaders, apiKey) {
-  const headers = { "Content-Type": "application/json" };
-  for (const [key, value] of Object.entries(clientHeaders || {})) {
-    if (ROUTER_STRIP_HEADERS.has(key.toLowerCase())) continue;
-    if (Array.isArray(value)) headers[key] = value.join(", ");
-    else if (typeof value !== "undefined") headers[key] = String(value);
-  }
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-  return headers;
-}
-
-function shouldBypassIntercept(req) {
-  return Boolean(bypassInterceptReason(req));
-}
-
-function bypassInterceptReason(req) {
-  const compatibilitySource = String(req.headers["x-9router-source"] || "").toLowerCase();
-  if (compatibilitySource === "9router") return "x-9router-source=9router";
-  return "";
-}
-
-function safeRequestPath(reqUrl) {
-  try {
-    return new URL(reqUrl, "https://local.invalid").pathname;
-  } catch {
-    return String(reqUrl || "").split("?")[0];
-  }
-}
-
-function responseBodySnippetForLog(raw, headers = {}) {
-  try {
-    const decoded = decodeResponseBody(raw, headers).toString("utf8");
-    const compact = redactText(decoded).replace(/\s+/g, " ").trim();
-    return compact.length > 1600 ? `${compact.slice(0, 1600)}...` : compact;
-  } catch (error) {
-    return `unreadable=${error.message} bytes=${raw.length}`;
-  }
-}
-
-function passthroughLogLabel(reqUrl) {
-  if (isFetchAvailableModelsRequest(reqUrl)) return "AUTH MODELS";
-  if (isAccountBootstrapRequest(reqUrl)) return "AUTH PASS";
-  if (isChatRequestUrl(reqUrl)) return "CHAT PASS";
-  return "PASS";
-}
-
-function logPassthroughResponse({ req, statusCode, targetHost, requestPath, raw, headers, extra = "" }) {
-  const label = passthroughLogLabel(req.url);
-  const suffix = extra ? ` ${extra}` : "";
-  const base = `${label} ${statusCode} ${req.method} ${targetHost}${requestPath}${suffix}`;
-  if (statusCode >= 400) {
-    console.error(`${base} errorBody=${responseBodySnippetForLog(raw, headers) || "-"}`);
-  } else {
-    console.log(base);
-  }
-}
-
-async function retryWithBackoff(fetchFn, options) {
-  const maxRetries = Number(options.maxRetries || 0);
-  const retryDelay = Number(options.retryDelay || 1000);
-  const retryBackoff = Number(options.retryBackoff || 1);
-  let lastError;
-  let lastResponse;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const response = await fetchFn();
-      lastResponse = response;
-
-      // If response is not ok and it's a 503, retry
-      if (!response.ok && (response.status === 503 || response.status === 502 || response.status === 504)) {
-        if (attempt < maxRetries) {
-          const waitMs = retryDelay * Math.pow(retryBackoff, attempt);
-          console.log(`Retry ${attempt + 1}/${maxRetries} after HTTP ${response.status} (waiting ${(waitMs / 1000).toFixed(1)}s)...`);
-          await new Promise(resolve => setTimeout(resolve, waitMs));
-          continue;
-        }
-      }
-
-      // Success or non-503 error - return response
-      return response;
-    } catch (error) {
-      lastError = error;
-      if (attempt < maxRetries) {
-        const waitMs = retryDelay * Math.pow(retryBackoff, attempt);
-        console.log(`Retry ${attempt + 1}/${maxRetries} after error (waiting ${(waitMs / 1000).toFixed(1)}s)...`);
-        await new Promise(resolve => setTimeout(resolve, waitMs));
-      }
-    }
-  }
-
-  // All retries exhausted - return the last response or throw error
-  if (lastResponse) return lastResponse;
-  throw lastError || new Error('Max retries exceeded');
-}
+const { summarizeAntigravityModelsResponse, summarizeRequestBodyForLog } = require("./model-serialization");
+const {
+  buildRouterHeaders,
+  bypassInterceptReason,
+  isAccountBootstrapRequest,
+  isChatRequestUrl,
+  isFetchAvailableModelsRequest,
+  isModelBootstrapMergeRequest,
+  logPassthroughResponse,
+  passthroughLogLabel,
+  retryWithBackoff,
+  safeRequestPath,
+} = require("./proxy-helpers");
 
 async function runProxy(options) {
   const targetHosts = targetHostsFrom(options);
@@ -181,74 +47,80 @@ async function runProxy(options) {
   }
 
   async function passthrough(req, res, bodyBuffer) {
-    const requestHost = String(req.headers.host || "").split(":")[0];
-    const targetHost = targetHosts.includes(requestHost) ? requestHost : primaryTargetHost(options);
-    const targetIP = await resolveTargetIP(targetHost);
-    const requestPath = safeRequestPath(req.url);
+    try {
+      const requestHost = String(req.headers.host || "").split(":")[0];
+      const targetHost = targetHosts.includes(requestHost) ? requestHost : primaryTargetHost(options);
+      const targetIP = await resolveTargetIP(targetHost);
+      const requestPath = safeRequestPath(req.url);
 
-    const forwardReq = https.request({
-      hostname: targetIP,
-      port: 443,
-      path: req.url,
-      method: req.method,
-      headers: { ...req.headers, host: targetHost },
-      servername: targetHost,
-      rejectUnauthorized: false,
-    }, (forwardRes) => {
-      if (isModelBootstrapMergeRequest(req.url)) {
-        const chunks = [];
-        forwardRes.on("data", (chunk) => chunks.push(chunk));
-        forwardRes.on("end", () => {
-          const raw = Buffer.concat(chunks);
-          const modelSummary = summarizeAntigravityModelsResponse(raw, forwardRes.headers);
-          logPassthroughResponse({
-            req,
-            statusCode: forwardRes.statusCode,
-            targetHost,
-            requestPath,
-            raw,
-            headers: forwardRes.headers,
-            extra: `bytes=${raw.length} ${modelSummary}`,
+      const forwardReq = https.request({
+        hostname: targetIP,
+        port: 443,
+        path: req.url,
+        method: req.method,
+        headers: { ...req.headers, host: targetHost },
+        servername: targetHost,
+        rejectUnauthorized: false,
+      }, (forwardRes) => {
+        if (isModelBootstrapMergeRequest(req.url)) {
+          const chunks = [];
+          forwardRes.on("data", (chunk) => chunks.push(chunk));
+          forwardRes.on("end", () => {
+            const raw = Buffer.concat(chunks);
+            const modelSummary = summarizeAntigravityModelsResponse(raw, forwardRes.headers);
+            logPassthroughResponse({
+              req,
+              statusCode: forwardRes.statusCode,
+              targetHost,
+              requestPath,
+              raw,
+              headers: forwardRes.headers,
+              extra: `bytes=${raw.length} ${modelSummary}`,
+            });
+            res.writeHead(forwardRes.statusCode, forwardRes.headers);
+            res.end(raw);
           });
-          res.writeHead(forwardRes.statusCode, forwardRes.headers);
-          res.end(raw);
-        });
-        return;
-      }
+          return;
+        }
 
-      if (forwardRes.statusCode >= 400) {
-        const chunks = [];
-        forwardRes.on("data", (chunk) => chunks.push(chunk));
-        forwardRes.on("end", () => {
-          const raw = Buffer.concat(chunks);
-          logPassthroughResponse({
-            req,
-            statusCode: forwardRes.statusCode,
-            targetHost,
-            requestPath,
-            raw,
-            headers: forwardRes.headers,
-            extra: `bytes=${raw.length}`,
+        if (forwardRes.statusCode >= 400) {
+          const chunks = [];
+          forwardRes.on("data", (chunk) => chunks.push(chunk));
+          forwardRes.on("end", () => {
+            const raw = Buffer.concat(chunks);
+            logPassthroughResponse({
+              req,
+              statusCode: forwardRes.statusCode,
+              targetHost,
+              requestPath,
+              raw,
+              headers: forwardRes.headers,
+              extra: `bytes=${raw.length}`,
+            });
+            res.writeHead(forwardRes.statusCode, forwardRes.headers);
+            res.end(raw);
           });
-          res.writeHead(forwardRes.statusCode, forwardRes.headers);
-          res.end(raw);
-        });
-        return;
-      }
+          return;
+        }
 
-      console.log(`${passthroughLogLabel(req.url)} ${forwardRes.statusCode} ${req.method} ${targetHost}${requestPath}`);
-      res.writeHead(forwardRes.statusCode, forwardRes.headers);
-      forwardRes.pipe(res);
-    });
+        console.log(`${passthroughLogLabel(req.url)} ${forwardRes.statusCode} ${req.method} ${targetHost}${requestPath}`);
+        res.writeHead(forwardRes.statusCode, forwardRes.headers);
+        forwardRes.pipe(res);
+      });
 
-    forwardReq.on("error", (err) => {
-      console.error(`Passthrough error: ${err.message}`);
-      if (!res.headersSent) res.writeHead(502);
-      res.end("Bad Gateway");
-    });
+      forwardReq.on("error", (err) => {
+        console.error(`Passthrough error: ${err.message}`);
+        if (!res.headersSent) res.writeHead(502);
+        res.end("Bad Gateway");
+      });
 
-    if (bodyBuffer.length > 0) forwardReq.write(bodyBuffer);
-    forwardReq.end();
+      if (bodyBuffer.length > 0) forwardReq.write(bodyBuffer);
+      forwardReq.end();
+    } catch (error) {
+      console.error(`Passthrough error: ${error.message}`);
+      if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain" });
+      if (!res.writableEnded) res.end("Bad Gateway");
+    }
   }
 
   async function intercept(req, res, bodyBuffer, mappedEntry, requestedModel) {
@@ -383,15 +255,10 @@ async function runProxy(options) {
   process.on("SIGINT", () => { server.close(() => process.exit(0)); });
 }
 
+// Re-export proxy-helpers for backward compatibility.
+const proxyHelpers = require("./proxy-helpers");
+
 module.exports = {
-  bypassInterceptReason,
-  buildRouterHeaders,
-  isAccountBootstrapRequest,
-  isChatRequestUrl,
-  isFetchAvailableModelsRequest,
-  isLoadCodeAssistRequest,
-  retryWithBackoff,
+  ...proxyHelpers,
   runProxy,
-  safeRequestPath,
-  shouldBypassIntercept,
 };

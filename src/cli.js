@@ -1,3 +1,5 @@
+const fs = require("fs");
+
 const {
   DEFAULT_REMOTE,
   DEFAULT_TARGET,
@@ -8,6 +10,8 @@ const { parseArgs } = require("./args");
 const {
   bundledSettingsPath,
   configPath,
+  exportConfig,
+  importConfig,
   machineId,
   normalizeTargetHosts,
   parseModelMapFile,
@@ -43,8 +47,10 @@ const { runProxy } = require("./proxy");
 function printHelp() {
   console.log(`
 Usage:
-  mitm-antigravity [start|setup|stop|status|gui|config|uninstall-cert] [options]
+  mitm-antigravity [start|setup|stop|status|gui|config|export-config|import-config|uninstall-cert] [options]
   mitm-antigravity config [list|path|init|set key=value ...]
+  mitm-antigravity export-config [--output file.json]     Export config as JSON
+  mitm-antigravity import-config <file.json>              Import config from JSON
 
 Options:
   --target-host       Target hostname (default: ${DEFAULT_TARGET})
@@ -146,6 +152,33 @@ async function main() {
 
   if (cmd === "config") {
     await handleConfigCommand(args);
+    return;
+  }
+
+  if (cmd === "export-config") {
+    const exported = exportConfig();
+    const outputFile = args.output || args.o || "";
+    const json = `${JSON.stringify(exported, null, 2)}\n`;
+    if (outputFile) {
+      fs.writeFileSync(outputFile, json);
+      console.log(`Config exported to ${outputFile}`);
+    } else {
+      process.stdout.write(json);
+    }
+    return;
+  }
+
+  if (cmd === "import-config") {
+    const inputFile = args._[1] || args.input || args.i || "";
+    if (!inputFile) {
+      console.error("Usage: mitm-antigravity import-config <file.json>");
+      process.exitCode = 1;
+      return;
+    }
+    const data = JSON.parse(fs.readFileSync(inputFile, "utf-8"));
+    const imported = importConfig(data);
+    console.log(JSON.stringify(redactConfig(imported), null, 2));
+    console.log(`Config imported from ${inputFile}`);
     return;
   }
 

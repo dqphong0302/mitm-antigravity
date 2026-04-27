@@ -9,6 +9,8 @@ const {
 const {
   bundledSettingsPath,
   configPath,
+  exportConfig,
+  importConfig,
   machineId,
   primaryTargetHost,
   readConfig,
@@ -250,6 +252,8 @@ async function routeGuiRequest(req, res, options) {
   if (req.method === "GET" && url.pathname === "/api/bootstrap") return handleBootstrap(res);
   if (req.method === "GET" && url.pathname === "/api/logs") return sendJson(res, 200, readRecentLogs());
   if (req.method === "PUT" && url.pathname === "/api/config") return handleSaveConfig(req, res);
+  if (req.method === "GET" && url.pathname === "/api/config/export") return handleExportConfig(res);
+  if (req.method === "POST" && url.pathname === "/api/config/import") return handleImportConfig(req, res);
   if (req.method === "POST" && url.pathname === "/api/check-key") return handleCheckKey(req, res);
   if (req.method === "POST" && url.pathname === "/api/start-proxy") return handleStartProxy(req, res, options);
   if (req.method === "POST" && url.pathname === "/api/stop-proxy") return handleStopProxy(req, res, options);
@@ -276,6 +280,25 @@ async function routeGuiRequest(req, res, options) {
   }
 
   sendJson(res, 404, { error: "Not found" });
+}
+
+async function handleExportConfig(res) {
+  const exported = exportConfig();
+  appendLog("info", "Config exported from UI", {
+    routerUrl: exported.routerUrl,
+    mappedModels: Object.keys(exported.modelMap || {}).length,
+  });
+  sendJson(res, 200, exported);
+}
+
+async function handleImportConfig(req, res) {
+  const body = await readRequestJson(req);
+  const imported = importConfig(body);
+  appendLog("info", "Config imported from UI", {
+    routerUrl: imported.routerUrl,
+    mappedModels: Object.keys(imported.modelMap || {}).length,
+  });
+  sendJson(res, 200, { config: imported });
 }
 
 async function runGui(options) {

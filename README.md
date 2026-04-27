@@ -7,6 +7,7 @@ MITM app for Antigravity requests. It can:
 3. Add a hosts/DNS redirect to the local proxy
 4. Intercept Antigravity `:generateContent` and `:streamGenerateContent` requests
 5. Forward intercepted requests to a configurable upstream endpoint with API key, model override, and model mapping
+6. Import/export configuration as portable JSON files
 
 The Antigravity mapping behavior follows a conservative MITM flow: auth/bootstrap requests pass through, built-in Antigravity models pass through unless one of the six supported model aliases is explicitly mapped.
 
@@ -85,6 +86,28 @@ You can also force every intercepted request to one upstream model:
 ```bash
 node index.js config set model=ag/gemini-2.5-pro
 ```
+
+## Import / Export Config
+
+Export the current configuration (endpoint, API key, model mappings) to a portable JSON file:
+
+```bash
+# Print to stdout
+node index.js export-config
+
+# Save to file
+node index.js export-config --output backup.json
+```
+
+Import a previously exported config:
+
+```bash
+node index.js import-config backup.json
+```
+
+The GUI also exposes `GET /api/config/export` and `POST /api/config/import` endpoints for programmatic use.
+
+Exported fields: `routerUrl`, `apiKey`, `model`, `alwaysIntercept`, `modelMap`. Metadata fields (`_format`, `_version`, `_exportedAt`, `_machine`) are included for traceability but ignored during import.
 
 ## Run
 
@@ -170,6 +193,29 @@ The GUI supports light, dark, and system theme modes, plus English and Vietnames
 The `Model Mapping` tab maps only these six built-in Antigravity aliases: `gemini-3.1-pro-high`, `gemini-3.1-pro-low`, `gemini-3-flash`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`. Unmapped models pass through to Google. Use `Save Mapping & Reload Proxy` after editing mappings so the running proxy process reloads the updated settings.
 By default, `npm run build` and `npm run tauri:build` strip `apiKey` from packaged settings so packaged builds do not carry your local secret. Set `MITM_COPY_SETTINGS_WITH_SECRETS=true` only for a private build where you explicitly want to copy the key.
 
+## Project Structure
+
+| Module | Responsibility |
+|--------|---------------|
+| `src/proxy.js` | Main HTTPS proxy server, request interception |
+| `src/proxy-helpers.js` | URL pattern matching, header building, retry logic |
+| `src/proxy-control.js` | Proxy start/stop/health-check |
+| `src/autostart.js` | LaunchAgent, Scheduled Task, systemd auto-start |
+| `src/models.js` | Model alias resolution, mapping, routing core |
+| `src/model-list.js` | Antigravity model list build/merge |
+| `src/model-serialization.js` | Response decoding, log summarization |
+| `src/config.js` | Settings read/write, import/export |
+| `src/cert.js` | TLS certificate generation and trust |
+| `src/dns.js` | Hosts file and DNS redirect management |
+| `src/gui.js` | GUI backend API routes |
+| `src/gui/` | GUI HTML template, CSS, client JS, i18n |
+| `src/cli.js` | CLI argument parsing and command dispatch |
+| `src/logging.js` | File logging with secret redaction |
+| `src/system.js` | Shell execution, sudo elevation |
+| `src/constants.js` | Shared defaults and alias lists |
+| `src/http.js` | HTTP body collection and JSON response |
+| `src/args.js` | Argument parser |
+
 ## Notes
 
 - This app changes the system trust store and hosts file.
@@ -177,3 +223,4 @@ By default, `npm run build` and `npm run tauri:build` strip `apiKey` from packag
 - Hosts redirection affects the whole target host, but only `:generateContent` and `:streamGenerateContent` are intercepted. Other paths are passed through.
 - Existing legacy local mapping files can still be used as an optional backward-compatibility fallback.
 - Built-in Antigravity aliases such as `gemini-3.1-pro-high`, `gemini-3-flash`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium` can be mapped explicitly; otherwise chat requests pass through.
+- Global `uncaughtException` and `unhandledRejection` handlers prevent silent crashes and log errors to the backend log file.

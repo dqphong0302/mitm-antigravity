@@ -1,7 +1,6 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const zlib = require("zlib");
 
 const {
   ANTIGRAVITY_ALIASES,
@@ -9,7 +8,6 @@ const {
   LEGACY_DEFAULT_MODEL_MAP,
   MAPPABLE_ANTIGRAVITY_ALIASES,
 } = require("./constants");
-const { sendJson } = require("./http");
 
 const ANTIGRAVITY_ALIAS_SET = new Set(ANTIGRAVITY_ALIASES);
 const MAPPABLE_ALIAS_SET = new Set(MAPPABLE_ANTIGRAVITY_ALIASES);
@@ -228,16 +226,6 @@ function extractModelFromBody(body) {
   return candidates.length > 0 ? candidates[0].value : null;
 }
 
-function summarizeRequestBodyForLog(body) {
-  const parsed = parseJsonBody(body);
-  if (!parsed || typeof parsed !== "object") return `bodyBytes=${Buffer.isBuffer(body) ? body.length : String(body || "").length} body=unparseable`;
-  const keys = Array.isArray(parsed) ? ["array"] : Object.keys(parsed).slice(0, 20);
-  const models = collectModelCandidates(parsed)
-    .map((item) => `${item.path}=${item.value}`)
-    .slice(0, 8);
-  return `bodyKeys=${keys.join(",") || "-"} modelCandidates=${models.join(",") || "-"}`;
-}
-
 function extractModelFromUrl(url) {
   const match = String(url).match(/\/models\/([^/:?]+):(generateContent|streamGenerateContent)/);
   return match ? decodeURIComponent(match[1]) : null;
@@ -290,158 +278,6 @@ function getMappedModel(model, options) {
   return entry ? entry.model : null;
 }
 
-function modelDisplayName(alias, mappedModel) {
-  const names = {
-    "gemini-3.1-pro-high": "Gemini 3.1 Pro High",
-    "gemini-3.1-pro-low": "Gemini 3.1 Pro Low",
-    "gemini-3-flash": "Gemini 3 Flash",
-    "claude-sonnet-4-6": "Claude Sonnet 4.6",
-    "claude-opus-4-6-thinking": "Claude Opus 4.6 Thinking",
-    "gpt-oss-120b-medium": "GPT OSS 120B Medium",
-  };
-  const base = names[alias] || alias;
-  return mappedModel ? `${base} (${mappedModel})` : base;
-}
-
-function fallbackModelListEntry(alias, mappedModel) {
-  const resetTime = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  return {
-    id: alias,
-    name: alias,
-    model: alias,
-    displayName: modelDisplayName(alias, mappedModel),
-    description: mappedModel ? `Routed to ${mappedModel}` : "Antigravity model",
-    disabled: false,
-    isInternal: false,
-    supportsImages: false,
-    supportsThinking: true,
-    supportedMimeTypes: {},
-    supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
-    quotaInfo: {
-      remainingFraction: 1,
-      resetTime,
-    },
-  };
-}
-
-function buildAntigravityModelList(options) {
-  const modelMap = options.modelMap || {};
-  const resetTime = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  const models = {};
-
-  for (const alias of ANTIGRAVITY_ALIASES) {
-    const mappedModel = mappingModel(modelMap[alias]) || getMappedModel(alias, options) || "";
-    models[alias] = fallbackModelListEntry(alias, mappedModel);
-    models[alias].quotaInfo.resetTime = resetTime;
-  }
-
-  return { models };
-}
-
-function mergeAntigravityModelListPayload(payload) {
-  const next = payload && typeof payload === "object" && !Array.isArray(payload)
-    ? payload
-    : {};
-  const existingModels = next.models && typeof next.models === "object" && !Array.isArray(next.models)
-    ? next.models
-    : {};
-  return {
-    payload: next,
-    added: [],
-    existingCount: Object.keys(existingModels).length,
-    totalCount: Object.keys(existingModels).length,
-  };
-}
-
-function mergeCascadeModelConfigData(configData) {
-  return { payload: configData, added: [], changed: false };
-}
-
-function mergeCascadeModelConfigsInPayload(payload) {
-  return { payload, added: [], paths: [] };
-}
-
-function sendAntigravityModelList(res, options) {
-  const payload = buildAntigravityModelList(options);
-  sendJson(res, 200, payload);
-}
-
-function decodeResponseBody(raw, headers = {}) {
-  const encoding = String(headers["content-encoding"] || "").toLowerCase();
-  if (encoding.includes("gzip")) return zlib.gunzipSync(raw);
-  if (encoding.includes("br")) return zlib.brotliDecompressSync(raw);
-  if (encoding.includes("deflate")) return zlib.inflateSync(raw);
-  return raw;
-}
-
-function summarizeAntigravityModelsResponse(raw, headers = {}) {
-  try {
-    const decoded = decodeResponseBody(raw, headers);
-    const data = JSON.parse(decoded.toString("utf8"));
-    const modelKeys = data?.models && typeof data.models === "object"
-      ? Object.keys(data.models)
-      : [];
-    const visible = modelKeys.filter((key) => data.models?.[key]?.isInternal !== true);
-    const summary = {
-      topLevelKeys: data && typeof data === "object" ? Object.keys(data).sort() : [],
-      modelCount: modelKeys.length,
-      visibleCount: visible.length,
-      modelKeys: modelKeys.slice(0, 30),
-      visibleKeys: visible.slice(0, 30),
-      modelDetails: modelKeys.slice(0, 30).map((key) => ({
-        key,
-        displayName: data.models?.[key]?.displayName,
-        model: data.models?.[key]?.model,
-        disabled: data.models?.[key]?.disabled,
-        isInternal: data.models?.[key]?.isInternal,
-      })),
-      contentEncoding: headers["content-encoding"] || null,
-      hasError: Boolean(data?.error),
-      errorCode: data?.error?.code || data?.code || null,
-      errorStatus: data?.error?.status || data?.status || null,
-    };
-    try {
-      fs.writeFileSync(path.join(os.tmpdir(), "mitm-antigravity-models-summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
-    } catch {
-      // Summary file is best-effort debug output.
-    }
-    return `models=${summary.modelCount} visible=${summary.visibleCount} keys=${summary.visibleKeys.join(",") || summary.modelKeys.join(",") || "-"}`;
-  } catch (error) {
-    return `unparseable=${error.message}`;
-  }
-}
-
-function summarizeCascadeModelConfigs(payload) {
-  const summaries = [];
-
-  function visit(value, pathParts) {
-    if (!value || typeof value !== "object") return;
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => visit(item, pathParts.concat(String(index))));
-      return;
-    }
-    if (Array.isArray(value.clientModelConfigs) || Array.isArray(value.clientModelSorts)) {
-      summaries.push({
-        path: pathParts.join(".") || "<root>",
-        configs: Array.isArray(value.clientModelConfigs) ? value.clientModelConfigs.length : 0,
-        sorts: Array.isArray(value.clientModelSorts) ? value.clientModelSorts.length : 0,
-        labels: Array.isArray(value.clientModelConfigs)
-          ? value.clientModelConfigs.map((config) => config?.label).filter(Boolean).slice(0, 30)
-          : [],
-      });
-    }
-    for (const [key, child] of Object.entries(value)) visit(child, pathParts.concat(key));
-  }
-
-  visit(payload, []);
-  try {
-    fs.writeFileSync(path.join(os.tmpdir(), "mitm-antigravity-cascade-models-summary.json"), `${JSON.stringify(summaries, null, 2)}\n`);
-  } catch {
-    // Summary file is best-effort debug output.
-  }
-  return summaries.map((item) => `${item.path}:configs=${item.configs} labels=${item.labels.join(",") || "-"}`).join(" | ") || "cascadeModels=-";
-}
-
 function normalizePrefix(prefix) {
   if (!prefix) return "";
   const lowered = String(prefix).toLowerCase();
@@ -449,9 +285,27 @@ function normalizePrefix(prefix) {
   return prefix.endsWith("/") ? prefix : `${prefix}/`;
 }
 
+// Re-export from split modules for backward compatibility.
+const {
+  buildAntigravityModelList,
+  mergeAntigravityModelListPayload,
+  mergeCascadeModelConfigData,
+  mergeCascadeModelConfigsInPayload,
+  modelDisplayName,
+  sendAntigravityModelList,
+} = require("./model-list");
+
+const {
+  decodeResponseBody,
+  summarizeAntigravityModelsResponse,
+  summarizeCascadeModelConfigs,
+  summarizeRequestBodyForLog,
+} = require("./model-serialization");
+
 module.exports = {
   buildAntigravityModelList,
   builtInAliasForModel,
+  collectModelCandidates,
   decodeResponseBody,
   deriveModelsUrl,
   extractModelFromBody,
@@ -459,6 +313,7 @@ module.exports = {
   fetchAvailableModels,
   getMappedEntry,
   getMappedModel,
+  looksLikeModelId,
   mappingModel,
   modelAliasFromName,
   modelNameCandidates,
@@ -470,6 +325,7 @@ module.exports = {
   normalizeModelMap,
   normalizePrefix,
   parseInlineModelMap,
+  parseJsonBody,
   sendAntigravityModelList,
   stripLegacyDefaultMappings,
   summarizeAntigravityModelsResponse,
