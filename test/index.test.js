@@ -114,10 +114,53 @@ test("merged model list preserves upstream account metadata and adds custom alia
   assert.equal(result.payload.models["gemini-2.5-pro"].quotaInfo.remainingFraction, 0.5);
   assert.ok(result.payload.models["custom-router-model"]);
   assert.ok(result.added.includes("custom-router-model"));
+  assert.equal(result.payload.models["custom-router-model"].model, "PLACEHOLDER_M0");
   assert.ok(result.payload.commandModelIds.includes("custom-router-model"));
   assert.ok(result.payload.commitMessageModelIds.includes("custom-router-model"));
   assert.ok(result.payload.agentModelSorts[0].groups.some((group) => group.modelIds.includes("custom-router-model")));
   assert.equal(result.payload.models["gemini-3-pro-high"], undefined);
+});
+
+test("merged user status model config data adds custom aliases to Antigravity dropdown", () => {
+  const upstream = {
+    userStatus: {
+      cascadeModelConfigData: {
+        clientModelConfigs: [
+          {
+            label: "Gemini 2.5 Pro",
+            modelOrAlias: { choice: { case: "model", value: "gemini-2.5-pro" } },
+            supportedMimeTypes: {},
+          },
+        ],
+        clientModelSorts: [
+          { name: "Agent", groups: [{ groupName: "All", modelLabels: ["Gemini 2.5 Pro"] }] },
+        ],
+      },
+    },
+  };
+
+  const result = mitm.mergeCascadeModelConfigsInPayload(upstream, {
+    modelMap: { "custom-router-model": "cx/custom-router-model" },
+  });
+
+  const configData = result.payload.userStatus.cascadeModelConfigData;
+  assert.ok(result.added.includes("custom-router-model (cx/custom-router-model)"));
+  assert.ok(configData.clientModelConfigs.some((config) => {
+    return config.label === "custom-router-model (cx/custom-router-model)"
+      && config.modelOrAlias.choice.value === "PLACEHOLDER_M0";
+  }));
+  assert.ok(configData.clientModelSorts[0].groups.some((group) => {
+    return group.groupName === "Custom" && group.modelLabels.includes("custom-router-model (cx/custom-router-model)");
+  }));
+});
+
+test("custom placeholder model ids route back to mapped custom aliases", () => {
+  const options = { modelMap: { "custom-router-model": "cx/custom-router-model" } };
+
+  assert.equal(mitm.customModelEnumForAlias("custom-router-model", options), "PLACEHOLDER_M0");
+  assert.equal(mitm.customAliasForModelEnum("PLACEHOLDER_M0", options), "custom-router-model");
+  assert.equal(mitm.extractModelFromBody(Buffer.from(JSON.stringify({ model: "PLACEHOLDER_M0" }))), "PLACEHOLDER_M0");
+  assert.equal(mitm.getMappedEntry("PLACEHOLDER_M0", options).model, "cx/custom-router-model");
 });
 
 test("chat model detection handles nested Antigravity model names", () => {
