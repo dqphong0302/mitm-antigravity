@@ -442,6 +442,51 @@ function guiClientScript() {
       }
     }
 
+    async function exportConfigUi() {
+      $("exportConfigBtn").disabled = true;
+      showStatus("importExportStatus", t("message.exporting"), "loading");
+      try {
+        const data = await api("/api/config/export");
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "mitm-antigravity-config.json";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        showStatus("importExportStatus", t("message.exported"), "ok");
+      } catch (error) {
+        showStatus("importExportStatus", t("error.prefix", { message: error.message }), "err");
+      } finally {
+        $("exportConfigBtn").disabled = false;
+      }
+    }
+
+    async function importConfigUi(file) {
+      $("importConfigBtn").disabled = true;
+      showStatus("importExportStatus", t("message.importing"), "loading");
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        const result = await api("/api/config/import", { method: "POST", body: JSON.stringify(data) });
+        state.config = result.config;
+        $("baseUrl").value = toBaseUrl(state.config.routerUrl || "");
+        $("apiKey").value = state.config.apiKey || "";
+        $("model").value = state.config.model || "";
+        $("passthroughUnmapped").checked = state.config.alwaysIntercept !== true;
+        renderMappings();
+        showStatus("importExportStatus", t("message.imported", { file: file.name }), "ok");
+        loadStatus();
+      } catch (error) {
+        showStatus("importExportStatus", t("error.prefix", { message: error.message }), "err");
+      } finally {
+        $("importConfigBtn").disabled = false;
+        $("importConfigFile").value = "";
+      }
+    }
+
     function switchTab(tab) {
       document.querySelectorAll(".tab-btn").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.tab === tab);
@@ -487,6 +532,11 @@ function guiClientScript() {
       $("eyeBtn").addEventListener("click", () => {
         const input = $("apiKey");
         input.type = input.type === "password" ? "text" : "password";
+      });
+      $("exportConfigBtn").addEventListener("click", exportConfigUi);
+      $("importConfigBtn").addEventListener("click", () => $("importConfigFile").click());
+      $("importConfigFile").addEventListener("change", (e) => {
+        if (e.target.files && e.target.files[0]) importConfigUi(e.target.files[0]);
       });
     }
 

@@ -207,6 +207,18 @@ function guiHtml() {
               <div class="path-item"><div class="path-label" data-i18n="settings.machine">Machine</div><div class="path-value" id="settingsMachine">—</div></div>
             </div>
           </section>
+          <section class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title" data-i18n="settings.importExport">Import / Export Config</h2>
+            </div>
+            <p class="panel-subtitle" data-i18n="settings.importExportDesc">Export your current configuration (endpoint, API key, model mappings) as a portable JSON file, or import a previously exported config.</p>
+            <div class="system-grid" style="margin-top:12px;">
+              <button class="secondary" id="exportConfigBtn" type="button" data-i18n="button.exportConfig">Export Config</button>
+              <button class="secondary" id="importConfigBtn" type="button" data-i18n="button.importConfig">Import Config</button>
+              <input type="file" id="importConfigFile" accept=".json,application/json" style="display:none;">
+            </div>
+            <div id="importExportStatus" class="status"></div>
+          </section>
         </section>
       </main>
     </div>
