@@ -18,9 +18,7 @@ const DEFAULT_TARGET_HOSTS = [
 const DEFAULT_TARGET = DEFAULT_TARGET_HOSTS[0];
 const DEFAULT_REMOTE = "127.0.0.1";
 const DEFAULT_ROUTER_URL = "http://localhost:20128/v1/chat/completions";
-const PRESET_9ROUTER_BASE_URL = "https://9router.phongdang.io.vn/v1";
-const PRESET_9ROUTER_MODEL = "cx/gpt-5.5";
-const PRESET_9ROUTER_PREFIX = "cx/";
+const DEFAULT_MODEL_PREFIX = "ag/";
 const APP_NAME = "mitm-antigravity";
 const ANTIGRAVITY_ALIASES = [
   "gemini-3.1-pro-high",
@@ -48,7 +46,7 @@ const DEFAULT_CONFIG = {
   routerUrl: DEFAULT_ROUTER_URL,
   apiKey: "",
   model: "",
-  modelPrefix: "ag/",
+  modelPrefix: DEFAULT_MODEL_PREFIX,
   alwaysIntercept: false,
   mockModelList: true,
   modelMap: {},
@@ -57,7 +55,7 @@ const DEFAULT_CONFIG = {
   retryBackoff: 1.5,
 };
 
-const LEGACY_DEFAULT_MODEL_MAP = Object.fromEntries(ANTIGRAVITY_ALIASES.map((alias) => [alias, PRESET_9ROUTER_MODEL]));
+const LEGACY_DEFAULT_MODEL_MAP = Object.fromEntries(ANTIGRAVITY_ALIASES.map((alias) => [alias, "cx/gpt-5.5"]));
 
 function isRoot() {
   return typeof process.getuid === "function" && process.getuid() === 0;
@@ -448,13 +446,7 @@ async function fetchAvailableModels(routerUrl, apiKey) {
 }
 
 function guiPresets() {
-  return {
-    router9: {
-      baseUrl: PRESET_9ROUTER_BASE_URL,
-      model: PRESET_9ROUTER_MODEL,
-      modelPrefix: PRESET_9ROUTER_PREFIX,
-    },
-  };
+  return {};
 }
 
 function openBrowser(url) {
@@ -690,12 +682,11 @@ function guiHtml() {
     <div class="card">
       <div class="card-header">
         <div class="card-title">\uD83D\uDD0C Endpoint &amp; Authentication</div>
-        <button class="preset" id="presetBtn">\u26a1 Apply 9router</button>
       </div>
       <div class="divider"></div>
       <div class="grid">
         <label class="full">Base URL <span class="req">*</span>
-          <input id="baseUrl" placeholder="https://9router.phongdang.io.vn/v1" autocomplete="off">
+          <input id="baseUrl" placeholder="https://api.example.com/v1" autocomplete="off">
         </label>
         <label>API Key
           <div class="input-wrap">
@@ -749,7 +740,7 @@ function guiHtml() {
       </div>
       <div style="margin-top:10px;font-size:12px;color:var(--muted);">
         Custom models are saved to <span style="font-family:'JetBrains Mono',monospace;color:var(--accent2);" id="settingsPathHint">settings.json</span>.
-        Unmapped built-in Antigravity models passthrough to Google by default. Create a custom model only when you want to route it to 9router/custom upstream.
+        Unmapped built-in Antigravity models passthrough to Google by default. Create a custom model only when you want to route it to a custom upstream.
       </div>
     </div>
     </section>
@@ -1103,20 +1094,12 @@ function guiHtml() {
       const inp = $('apiKey');
       inp.type = inp.type === 'password' ? 'text' : 'password';
     });
-    $('presetBtn').addEventListener('click', () => {
-      const preset = state.presets.router9 || {};
-      $('baseUrl').value = preset.baseUrl || 'https://9router.phongdang.io.vn/v1';
-      $('modelPrefix').value = preset.modelPrefix || 'cx/';
-      applyModelToAliases(preset.model || 'cx/gpt-5.5');
-      if ($('apiKey').value.trim()) checkKey();
-      else showStatus('9router preset applied. Enter API key, then test and load models.', 'warn');
-    });
     $('addAliasBtn').addEventListener('click', () => {
       const alias = $('newAlias').value.trim();
       if (!alias) return;
       if (state.config) state.config.modelMap = readMappings();
       else state.config = { modelMap: {} };
-      const upstream = $('newAliasModel').value.trim() || PRESET_9ROUTER_MODEL;
+      const upstream = $('newAliasModel').value.trim() || DEFAULT_MODEL_PREFIX + alias;
       const reasoning = $('newAliasReasoning').value || '';
       state.config.modelMap[alias] = reasoning ? { model: upstream, reasoning_effort: reasoning } : upstream;
       if (!state.aliases.includes(alias)) state.aliases.push(alias);

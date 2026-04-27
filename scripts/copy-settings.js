@@ -11,10 +11,16 @@ if (!fs.existsSync(source) || !fs.existsSync(targetDir)) process.exit(0);
 const settings = JSON.parse(fs.readFileSync(source, "utf8"));
 const includeSecrets = String(process.env.MITM_COPY_SETTINGS_WITH_SECRETS || "").toLowerCase() === "true";
 
-if (!includeSecrets && settings.machines && typeof settings.machines === "object") {
+if (settings.machines && typeof settings.machines === "object") {
   for (const machineConfig of Object.values(settings.machines)) {
     if (machineConfig && typeof machineConfig === "object") {
-      machineConfig.apiKey = "";
+      if (!includeSecrets) {
+        machineConfig.apiKey = "";
+        machineConfig.routerUrl = "";
+        machineConfig.model = "";
+        machineConfig.modelPrefix = "ag/";
+        machineConfig.modelMap = {};
+      }
     }
   }
 }

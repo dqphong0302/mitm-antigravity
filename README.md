@@ -62,11 +62,10 @@ node mitm-oneclick.js gui
 The GUI runs at `http://127.0.0.1:20245/`. Use `--ui-port 20246` to change the port or `--no-open` to keep it from opening a browser automatically.
 The GUI is organized into two compact tabs:
 
-- **Config & Models**: endpoint, API key, 9router preset, and model mappings.
+- **Config & Models**: endpoint, API key, and custom model aliases.
 - **Proxy & System**: proxy start, DNS/certificate actions, Antigravity trust, and live status cards.
 
-The `Apply 9router` preset fills `https://9router.phongdang.io.vn/v1`, sets the fallback prefix to `cx/`, and maps the built-in Antigravity aliases to `cx/gpt-5.5`. It does not embed an API key; enter the key in the GUI or keep it in your local `settings.json`.
-Use `Apply DNS & Cert` in the **Proxy & System** tab to generate/trust the certificate and write the hosts redirect. On macOS/Linux, enter your sudo password in the GUI before clicking it.
+Use `Apply DNS & Cert` in the **Proxy & System** tab to generate/trust the certificate and write the hosts redirect. The GUI never asks for your sudo password; the operating system prompts for administrator approval when required.
 
 Set the upstream endpoint, API key, and default Antigravity model mapping:
 
@@ -146,8 +145,8 @@ Useful options:
 - `--map source=target`: add Antigravity model mapping; can be repeated
 - `--model-map-file`: JSON mapping file, for example `{ "gemini-2.5-pro": "ag/gemini-2.5-pro" }`
 - `--model-prefix`: prefix applied when no exact mapping exists. Default: `ag/`
-- `--always-intercept`: intercept even when no mapping exists. Default is off, matching 9router behavior.
-- `--mock-model-list`: return local Antigravity alias mappings for `fetchAvailableModels`. Default is off; model-list requests pass through to Google, matching 9router's MITM behavior.
+- `--always-intercept`: intercept even when no mapping exists. Default is off, so unmapped Antigravity models pass through.
+- `--mock-model-list`: return local custom aliases for `fetchAvailableModels`. Default is on for custom aliases; disable it to pass model-list requests through.
 - `gui`: starts the local configuration UI
 - `--ui-port`: local GUI port. Default: `20245`
 - `--no-open`: start the GUI server without opening a browser
@@ -191,7 +190,7 @@ The Tauri app's `Proxy & System` tab includes `Start Proxy`, `Stop Proxy`, `Enab
 
 The GUI never asks for or stores your sudo password. Privileged actions use the operating system's native administrator prompt when elevation is needed.
 
-The `Model Mapping` tab is now for custom model aliases. Built-in Antigravity models passthrough to Google by default unless you create a custom alias or explicit mapping. Use `+ Create custom model` to define the Antigravity-visible name, upstream model such as `cx/gpt-5.5`, and optional `reasoning_effort`. Keep `Expose custom aliases to Antigravity model list` enabled to advertise these custom aliases to Antigravity.
+The `Model Mapping` tab is now for custom model aliases. Built-in Antigravity models passthrough to Google by default unless you create a custom alias or explicit mapping. Use `+ Create custom model` to define the Antigravity-visible name, upstream model, and optional `reasoning_effort`. Keep `Expose custom aliases to Antigravity model list` enabled to advertise these custom aliases to Antigravity.
 By default, `npm run build` and `npm run tauri:build` strip `apiKey` from packaged settings so packaged builds do not carry your local secret. Set `MITM_COPY_SETTINGS_WITH_SECRETS=true` only for a private build where you explicitly want to copy the key.
 
 ## Notes
@@ -199,5 +198,5 @@ By default, `npm run build` and `npm run tauri:build` strip `apiKey` from packag
 - This app changes the system trust store and hosts file.
 - If Antigravity uses certificate pinning, MITM will fail.
 - Hosts redirection affects the whole target host, but only `:generateContent` and `:streamGenerateContent` are intercepted. Other paths are passed through.
-- Existing `~/.9router/db.json` mappings under `mitmAlias.antigravity` are still used as a fallback.
-- Default mappings use 9router-style Antigravity aliases such as `gemini-3.1-pro-high`, `gemini-3-flash`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`.
+- Existing `~/.9router/db.json` mappings under `mitmAlias.antigravity` are still used as an optional backward-compatibility fallback.
+- Built-in Antigravity aliases such as `gemini-3.1-pro-high`, `gemini-3-flash`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium` pass through by default unless mapped explicitly.

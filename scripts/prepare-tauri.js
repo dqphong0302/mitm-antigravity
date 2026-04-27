@@ -16,9 +16,16 @@ const targetPath = path.join(resourcesDir, backendName);
 function stripSecrets(settings) {
     const clone = JSON.parse(JSON.stringify(settings || {}));
     for (const machine of Object.values(clone.machines || {})) {
-        if (machine && typeof machine === "object") machine.apiKey = "";
+        if (machine && typeof machine === "object") {
+            machine.apiKey = "";
+            machine.routerUrl = "";
+            machine.model = "";
+            machine.modelPrefix = "ag/";
+            machine.modelMap = {};
+        }
     }
     if (clone.apiKey) clone.apiKey = "";
+    if (clone.routerUrl) clone.routerUrl = "";
     return clone;
 }
 
