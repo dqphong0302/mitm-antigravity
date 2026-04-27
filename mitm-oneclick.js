@@ -1412,9 +1412,45 @@ async function getLaunchctlEnv(name) {
   }
 }
 
+async function getWindowsUserEnv(name) {
+  if (!IS_WIN) return "";
+  try {
+    const script = `$name = ${JSON.stringify(name)}; [Environment]::GetEnvironmentVariable($name, 'User')`;
+    return (await execPowerShell(script)).trim();
+  } catch {
+    return "";
+  }
+}
+
+async function setWindowsUserEnv(name, value) {
+  const script = `$name = ${JSON.stringify(name)}; $value = ${JSON.stringify(value)}; [Environment]::SetEnvironmentVariable($name, $value, 'User')`;
+  await execPowerShell(script);
+}
+
+function nodeExtraCaBundlePath() {
+  return path.join(certDir(), "node-extra-ca-bundle.crt");
+}
+
+function nodeExtraCaValueWithCert(currentValue, status, certPath) {
+  if (!currentValue || status.applied) return currentValue || certPath;
+
+  const bundlePath = nodeExtraCaBundlePath();
+  const certPem = fs.readFileSync(certPath, "utf-8").trim();
+  const existingPem = fs.existsSync(currentValue) ? fs.readFileSync(currentValue, "utf-8").trim() : "";
+  fs.writeFileSync(bundlePath, `${existingPem ? `${existingPem}\n\n` : ""}${certPem}\n`);
+  return bundlePath;
+}
+
 async function checkAntigravityNodeTrust(certPath) {
+  if (IS_WIN) {
+    const value = await getWindowsUserEnv("NODE_EXTRA_CA_CERTS");
+    const fingerprint = getCertFingerprint(certPath).replace(/:/g, "").toUpperCase();
+    const applied = Boolean(value && getPemFingerprints(value).includes(fingerprint));
+    return { supported: true, applied, value };
+  }
+
   if (!IS_MAC) {
-    return { supported: false, applied: true, value: "" };
+    return { supported: false, applied: false, value: "" };
   }
 
   const value = await getLaunchctlEnv("NODE_EXTRA_CA_CERTS");
@@ -1424,21 +1460,31 @@ async function checkAntigravityNodeTrust(certPath) {
 }
 
 async function applyAntigravityNodeTrust(certPath) {
+  if (IS_WIN) {
+    const currentValue = await getWindowsUserEnv("NODE_EXTRA_CA_CERTS");
+    const status = await checkAntigravityNodeTrust(certPath);
+    const nextValue = nodeExtraCaValueWithCert(currentValue, status, certPath);
+
+    await setWindowsUserEnv("NODE_EXTRA_CA_CERTS", nextValue);
+    const nextStatus = await checkAntigravityNodeTrust(certPath);
+    if (!nextStatus.applied) throw new Error("Failed to apply NODE_EXTRA_CA_CERTS for the current Windows user");
+
+    return {
+      supported: true,
+      applied: true,
+      changed: nextValue !== currentValue,
+      value: nextValue,
+      restartRequired: true,
+    };
+  }
+
   if (!IS_MAC) {
     return { supported: false, applied: false, restartRequired: false };
   }
 
   const currentValue = await getLaunchctlEnv("NODE_EXTRA_CA_CERTS");
   const status = await checkAntigravityNodeTrust(certPath);
-  let nextValue = currentValue || certPath;
-
-  if (currentValue && !status.applied) {
-    const bundlePath = path.join(certDir(), "node-extra-ca-bundle.crt");
-    const certPem = fs.readFileSync(certPath, "utf-8").trim();
-    const existingPem = fs.existsSync(currentValue) ? fs.readFileSync(currentValue, "utf-8").trim() : "";
-    fs.writeFileSync(bundlePath, `${existingPem ? `${existingPem}\n\n` : ""}${certPem}\n`);
-    nextValue = bundlePath;
-  }
+  const nextValue = nodeExtraCaValueWithCert(currentValue, status, certPath);
 
   await execPromise(`launchctl setenv NODE_EXTRA_CA_CERTS ${shellQuote(nextValue)}`);
   const nextStatus = await checkAntigravityNodeTrust(certPath);
