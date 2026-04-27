@@ -1342,10 +1342,11 @@ function execWithSudo(command, password) {
   return execPromise(`sudo sh -c ${shellQuote(command)}`);
 }
 
-function execPowerShell(script, { elevated = false } = {}) {
+function execPowerShell(script, { elevated = false, wait = true } = {}) {
   const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const waitFlag = wait ? " -Wait" : "";
   const command = elevated
-    ? `powershell -NoProfile -Command "Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}') -Verb RunAs -Wait"`
+    ? `powershell -NoProfile -Command "Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}') -Verb RunAs${waitFlag}"`
     : `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
   return new Promise((resolve, reject) => {
     exec(command, (error, stdout, stderr) => {
@@ -1525,7 +1526,14 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
     : `${shellQuote(process.execPath)} ${shellQuote(__filename)}`;
 
   if (IS_WIN) {
-    await execPowerShell(`Start-Process -FilePath '${process.execPath.replace(/'/g, "''")}' -ArgumentList 'start --skip-setup' -WorkingDirectory '${runtimeDir().replace(/'/g, "''")}'`, { elevated: true });
+    const filePath = process.execPath;
+    const argumentList = process.pkg
+      ? ["start", "--skip-setup"]
+      : [__filename, "start", "--skip-setup"];
+    const psArgs = argumentList.map((arg) => `'${arg.replace(/'/g, "''")}'`).join(" ");
+    const innerScript = `Set-Location -LiteralPath '${runtimeDir().replace(/'/g, "''")}'; & '${filePath.replace(/'/g, "''")}' ${psArgs} *> '${logPath.replace(/'/g, "''")}'`;
+    const innerEncoded = Buffer.from(innerScript, "utf16le").toString("base64");
+    await execPowerShell(`Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${innerEncoded}' -WindowStyle Hidden`, { elevated: true, wait: false });
   } else if (IS_MAC) {
     const label = "com.phongdang.mitm-antigravity.proxy";
     await execPromise(`launchctl remove ${shellQuote(label)} >/dev/null 2>&1 || true`).catch(() => { });
@@ -1562,7 +1570,7 @@ async function pidsListeningOnPortUnix(port) {
 
 async function pidsListeningOnPortWindows(port) {
   try {
-    const { stdout } = await execPowerShell(`Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`);
+    const stdout = await execPowerShell(`Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`);
     return Array.from(new Set(stdout.split(/\s+/).map((pid) => pid.trim()).filter(Boolean)));
   } catch (_) {
     return [];
@@ -1933,16 +1941,58 @@ async function addDNSEntries({ targetHosts, remoteHost, remoteIp, sudoPassword }
     };
   }
 
-  const results = [];
-  for (const targetHost of targetHosts) {
-    results.push({
-      targetHost,
-      ...(await addDNSEntry({ targetHost, remoteHost, remoteIp, sudoPassword })),
-    });
+  let ip = remoteIp;
+  if (!ip) {
+    const addresses = await resolveRemoteIP(remoteHost);
+    ip = addresses[0];
   }
+
+  const entries = dnsEntriesForHosts(targetHosts, ip);
+  const activeBefore = entries.every((entry) => checkHostsEntry(entry.targetHost, entry.ip));
+  const blockLines = [
+    "# BEGIN ANTIGRAVITY_PROXY",
+    ...entries.map((entry) => `${entry.ip} ${entry.targetHost}`),
+    "# END ANTIGRAVITY_PROXY",
+  ];
+  const hostSet = new Set(targetHosts);
+  const currentContent = fs.existsSync(HOSTS_FILE) ? fs.readFileSync(HOSTS_FILE, "utf8") : "";
+  const outputLines = [];
+  let skip = false;
+
+  for (const line of currentContent.split(/\r?\n/)) {
+    if (line === "# BEGIN ANTIGRAVITY_PROXY") {
+      skip = true;
+      continue;
+    }
+    if (line === "# END ANTIGRAVITY_PROXY") {
+      skip = false;
+      continue;
+    }
+    if (skip) continue;
+
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith("#")) {
+      const parts = trimmed.split(/\s+/);
+      if (parts.slice(1).some((host) => hostSet.has(host))) continue;
+    }
+
+    outputLines.push(line);
+  }
+
+  while (outputLines.length > 0 && !outputLines[outputLines.length - 1].trim()) outputLines.pop();
+  if (outputLines.length > 0) outputLines.push("");
+  outputLines.push(...blockLines);
+
+  const tempHostsPath = path.join(os.tmpdir(), `mitm-antigravity-hosts-${process.pid}.tmp`);
+  fs.writeFileSync(tempHostsPath, `${outputLines.join("\r\n")}\r\n`, "ascii");
+
+  await execPowerShell(`Copy-Item -LiteralPath '${tempHostsPath.replace(/'/g, "''")}' -Destination '${HOSTS_FILE.replace(/'/g, "''")}' -Force`, { elevated: true });
+  fs.rmSync(tempHostsPath, { force: true });
+  await execPowerShell("ipconfig /flushdns", { elevated: true });
+
   return {
-    added: results.some((result) => result.added),
-    results,
+    added: !activeBefore,
+    results: entries.map((entry) => ({ targetHost: entry.targetHost, added: !activeBefore, ip: entry.ip })),
   };
 }
 
