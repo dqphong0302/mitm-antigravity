@@ -8,7 +8,7 @@ MITM app for Antigravity requests. It can:
 4. Intercept Antigravity `:generateContent` and `:streamGenerateContent` requests
 5. Forward intercepted requests to a configurable upstream endpoint with API key, model override, and model mapping
 
-The Antigravity mapping behavior follows 9router's MITM flow: extract the model from the Gemini URL/body, look up an Antigravity alias mapping, allow prefix fallback matches, and only intercept when a mapping exists. You can still force interception with `alwaysIntercept=true`.
+The Antigravity mapping behavior follows a conservative MITM flow: auth/bootstrap requests pass through, built-in Antigravity models pass through unless explicitly mapped, and custom aliases are merged into the model list then routed to your upstream endpoint.
 
 ## Install
 
@@ -43,20 +43,20 @@ Config is now saved in a visible `settings.json` file beside the source or binar
 }
 ```
 
-For the source tree, the file is `./settings.json`. For built binaries, `npm run build` copies it to `./dist/settings.json`.
+For the source tree, the file is `./settings.json`. Tauri builds bundle a stripped first-run `settings.json` resource, then save runtime settings under the user profile.
 
 Create or show the default config:
 
 ```bash
-node mitm-oneclick.js config init
-node mitm-oneclick.js config list
-node mitm-oneclick.js config paths
+node index.js config init
+node index.js config list
+node index.js config paths
 ```
 
 Open the GUI to enter endpoint/API key, check the key, load available models, and choose Antigravity mappings:
 
 ```bash
-node mitm-oneclick.js gui
+node index.js gui
 ```
 
 The GUI runs at `http://127.0.0.1:20245/`. Use `--ui-port 20246` to change the port or `--no-open` to keep it from opening a browser automatically.
@@ -70,7 +70,7 @@ Use `Apply DNS & Cert` in the **Proxy & System** tab to generate/trust the certi
 Set the upstream endpoint, API key, and default Antigravity model mapping:
 
 ```bash
-node mitm-oneclick.js config set \
+node index.js config set \
   routerUrl=https://your-endpoint.example.com/v1/chat/completions \
   apiKey=sk-your-key \
   modelMap.gemini-3-flash=ag/gemini-3-flash \
@@ -80,44 +80,30 @@ node mitm-oneclick.js config set \
 You can also force every intercepted request to one upstream model:
 
 ```bash
-node mitm-oneclick.js config set model=ag/gemini-2.5-pro
+node index.js config set model=ag/gemini-2.5-pro
 ```
 
 ## Run
 
-macOS:
+During development, open the Tauri desktop app:
 
 ```bash
-sudo node mitm-oneclick.js setup --force-cert
-sudo node mitm-oneclick.js start
+npm run tauri:dev
 ```
 
-`setup` generates/trusts the certificate and rewrites the managed hosts block. `start` runs the HTTPS proxy on port 443.
+The app window starts the local backend automatically and loads the control panel. Use the **Proxy & System** tab to apply DNS/certificate setup, start/stop the proxy, and manage auto-start.
 
-Windows:
-
-```bat
-node mitm-oneclick.js start
-```
-
-Windows will prompt for UAC when it needs to install the certificate or edit the hosts file.
-
-Stop DNS redirection:
+The backend CLI is still available for low-level debugging:
 
 ```bash
-node mitm-oneclick.js stop
+node index.js status
+node index.js stop
 ```
 
-Show status:
+Remove the trusted certificate manually if needed:
 
 ```bash
-node mitm-oneclick.js status
-```
-
-Remove trusted certificate:
-
-```bash
-sudo node mitm-oneclick.js uninstall-cert
+sudo node index.js uninstall-cert
 ```
 
 ## One-off Options
@@ -125,7 +111,7 @@ sudo node mitm-oneclick.js uninstall-cert
 All important settings can be overridden without editing config:
 
 ```bash
-node mitm-oneclick.js start \
+node index.js start \
   --endpoint https://your-endpoint.example.com/v1/chat/completions \
   --api-key sk-your-key \
   --map gemini-2.5-pro=ag/gemini-2.5-pro \
@@ -135,7 +121,7 @@ node mitm-oneclick.js start \
 Useful options:
 
 - `--target-hosts`: Antigravity hosts to redirect. Default: `daily-cloudcode-pa.googleapis.com,cloudcode-pa.googleapis.com`
-- `--target-host`: legacy single-host alias; the default host automatically expands to both Antigravity hosts
+- `--target-host`: single-host alias; the default host automatically expands to both Antigravity hosts
 - `--skip-setup`: start the proxy without touching certificate or hosts entries
 - `--remote-ip`: IP written to hosts. Default: `127.0.0.1`
 - `--port`: local HTTPS proxy port. Default: `443`
@@ -144,41 +130,29 @@ Useful options:
 - `--model`: force all intercepted requests to this upstream model
 - `--map source=target`: add Antigravity model mapping; can be repeated
 - `--model-map-file`: JSON mapping file, for example `{ "gemini-2.5-pro": "ag/gemini-2.5-pro" }`
-- `--model-prefix`: prefix applied when no exact mapping exists. Default: `ag/`
-- `--always-intercept`: intercept even when no mapping exists. Default is off, so unmapped Antigravity models pass through.
+- `--model-prefix`: prefix applied to custom aliases when no exact mapping exists. Built-in Antigravity models do not use this fallback.
+- `--always-intercept`: intercept even when no mapping or prefix fallback exists. Default is off.
 - `--mock-model-list`: return local custom aliases for `fetchAvailableModels`. Default is on for custom aliases; disable it to pass model-list requests through.
 - `gui`: starts the local configuration UI
 - `--ui-port`: local GUI port. Default: `20245`
 - `--no-open`: start the GUI server without opening a browser
 
-## Build Windows and macOS Apps
+## Build Tauri App
 
 ```bash
 npm run build
 ```
 
-You can also run individual packaging steps:
+or directly:
 
 ```bash
-npm run build:pkg
-npm run build:mac-app
-npm run build:win-portable
 npm run tauri:build
 ```
 
-Outputs are written to `dist/` for:
+The macOS app bundle is written to:
 
-- macOS Apple Silicon binary: `mitm-antigravity-macos-arm64`
-- macOS Intel binary: `mitm-antigravity-macos-x64`
-- Windows x64 binary: `mitm-antigravity-win-x64.exe`
-- macOS Apple Silicon app: `MITM Antigravity-arm64.app`
-- macOS Intel app: `MITM Antigravity-x64.app`
-- Windows portable app folder: `MITM Antigravity Windows/`
-
-The legacy app launchers still open the local browser GUI. For a native desktop window, build the Tauri app:
-
-```bash
-npm run tauri:build
+```text
+src-tauri/target/release/bundle/macos/MITM AG.app
 ```
 
 The Tauri app starts the bundled backend with `gui --no-open` and displays `http://127.0.0.1:20245/` inside a native desktop window. The bundled backend resource also receives a stripped `settings.json` by default, so packaged builds do not carry your local API key.
@@ -186,11 +160,12 @@ The Tauri app starts the bundled backend with `gui --no-open` and displays `http
 Runtime settings are saved persistently under the user profile at `~/.mitm-antigravity/settings.json`. A bundled or local `settings.json` is only used as a first-run fallback/import source, so app updates or moving the app bundle should not delete your saved configuration.
 Certificates are kept in the user's home directory under `.mitm-antigravity`.
 
-The Tauri app's `Proxy & System` tab includes `Start Proxy`, `Stop Proxy`, `Enable Auto Start`, and `Disable Auto Start` controls. Auto-start runs `start --skip-setup` after user login using a macOS LaunchAgent, Windows Scheduled Task, or Linux user systemd service. Run `Apply DNS & Cert` once before relying on auto-start so the OS trust/DNS setup is already in place.
+The Tauri app's main screen includes `Start Proxy & Trust` and `Stop Proxy` controls. `Start Proxy & Trust` applies Antigravity Node trust before starting the proxy. Auto-start runs `start --skip-setup` after user login using a macOS LaunchAgent, Windows Scheduled Task, or Linux user systemd service. Run `Apply DNS & Cert` once before relying on auto-start so the OS trust/DNS setup is already in place.
 
 The GUI never asks for or stores your sudo password. Privileged actions use the operating system's native administrator prompt when elevation is needed.
 
-The `Model Mapping` tab is now for custom model aliases. Built-in Antigravity models passthrough to Google by default unless you create a custom alias or explicit mapping. Use `+ Create custom model` to define the Antigravity-visible name, upstream model, and optional `reasoning_effort`. Keep `Expose custom aliases to Antigravity model list` enabled to advertise these custom aliases to Antigravity.
+The `Model Mapping` tab is for built-in mappings and custom model aliases. Built-in Antigravity models use explicit mappings when configured, otherwise chat requests pass through to Google. Use `+ Create custom model` to define the Antigravity-visible name, upstream model, and optional `reasoning_effort`. Keep `Expose custom aliases to Antigravity model list` enabled to advertise these custom aliases to Antigravity.
+Built-in Antigravity model rows cannot be deleted in the Mapping tab. Only custom models show a Remove action. Use `Save Mapping & Reload Proxy` after editing mappings so the running proxy process reloads the updated settings.
 By default, `npm run build` and `npm run tauri:build` strip `apiKey` from packaged settings so packaged builds do not carry your local secret. Set `MITM_COPY_SETTINGS_WITH_SECRETS=true` only for a private build where you explicitly want to copy the key.
 
 ## Notes
@@ -198,5 +173,5 @@ By default, `npm run build` and `npm run tauri:build` strip `apiKey` from packag
 - This app changes the system trust store and hosts file.
 - If Antigravity uses certificate pinning, MITM will fail.
 - Hosts redirection affects the whole target host, but only `:generateContent` and `:streamGenerateContent` are intercepted. Other paths are passed through.
-- Existing `~/.9router/db.json` mappings under `mitmAlias.antigravity` are still used as an optional backward-compatibility fallback.
-- Built-in Antigravity aliases such as `gemini-3.1-pro-high`, `gemini-3-flash`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium` pass through by default unless mapped explicitly.
+- Existing legacy local mapping files can still be used as an optional backward-compatibility fallback.
+- Built-in Antigravity aliases such as `gemini-3.1-pro-high`, `gemini-3-flash`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium` can be mapped explicitly; otherwise chat requests pass through.

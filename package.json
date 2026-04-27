@@ -5,18 +5,17 @@
   "description": "Cross-platform Antigravity MITM app with configurable DNS, endpoint, API key and model mapping",
   "type": "commonjs",
   "bin": {
-    "mitm-antigravity": "mitm-oneclick.js",
-    "mitm-oneclick": "mitm-oneclick.js"
+    "mitm-antigravity": "index.js",
+    "mitm-oneclick": "index.js"
   },
   "scripts": {
-    "start": "node mitm-oneclick.js start",
-    "status": "node mitm-oneclick.js status",
-    "stop": "node mitm-oneclick.js stop",
-    "check": "node --check mitm-oneclick.js && node --check scripts/build-macos-app.js && node --check scripts/build-windows-portable.js && node --check scripts/prepare-tauri.js",
+    "start": "node index.js start",
+    "status": "node index.js status",
+    "stop": "node index.js stop",
+    "test": "node --test",
+    "check": "node --check index.js && node --check src/args.js && node --check src/cert.js && node --check src/cli.js && node --check src/config.js && node --check src/constants.js && node --check src/dns.js && node --check src/gui.js && node --check src/http.js && node --check src/index.js && node --check src/logging.js && node --check src/models.js && node --check src/proxy-control.js && node --check src/proxy.js && node --check src/system.js && node --check scripts/copy-settings.js && node --check scripts/prepare-tauri.js",
     "build:pkg": "pkg . --targets node18-macos-arm64,node18-macos-x64,node18-win-x64 --out-path dist && node scripts/copy-settings.js",
-    "build:mac-app": "node scripts/build-macos-app.js",
-    "build:win-portable": "node scripts/build-windows-portable.js",
-    "build": "npm run build:pkg && npm run build:mac-app && npm run build:win-portable",
+    "build": "npm run tauri:build",
     "tauri:prepare": "node scripts/prepare-tauri.js",
     "tauri:prepare:dev": "npm run build:pkg && node scripts/prepare-tauri.js",
     "tauri:dev": "tauri dev",
@@ -31,8 +30,10 @@
   },
   "pkg": {
     "scripts": [
-      "mitm-oneclick.js"
+      "index.js",
+      "src/**/*.js"
     ],
     "outputPath": "dist"
-  }
+  },
+  "main": "index.js"
 }

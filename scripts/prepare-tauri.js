@@ -4,7 +4,7 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 const distDir = path.join(root, "dist");
 const resourcesDir = path.join(root, "src-tauri", "resources");
-const backendName = process.platform === "win32" ? "mitm-antigravity-backend.exe" : "mitm-antigravity-backend";
+const backendName = process.platform === "win32" ? "mitm-ag-backend.exe" : "mitm-ag-backend";
 const sourceName = process.platform === "win32"
     ? "mitm-antigravity-win-x64.exe"
     : process.arch === "arm64"
