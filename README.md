@@ -8,7 +8,7 @@ MITM app for Antigravity requests. It can:
 4. Intercept Antigravity `:generateContent` and `:streamGenerateContent` requests
 5. Forward intercepted requests to a configurable upstream endpoint with API key, model override, and model mapping
 
-The Antigravity mapping behavior follows a conservative MITM flow: auth/bootstrap requests pass through, built-in Antigravity models pass through unless explicitly mapped, and custom aliases are merged into the model list then routed to your upstream endpoint.
+The Antigravity mapping behavior follows a conservative MITM flow: auth/bootstrap requests pass through, built-in Antigravity models pass through unless one of the six supported model aliases is explicitly mapped.
 
 ## Install
 
@@ -60,10 +60,13 @@ node index.js gui
 ```
 
 The GUI runs at `http://127.0.0.1:20245/`. Use `--ui-port 20246` to change the port or `--no-open` to keep it from opening a browser automatically.
-The GUI is organized into two compact tabs:
+The GUI is organized into compact tabs:
 
-- **Config & Models**: endpoint, API key, and custom model aliases.
+- **Config**: endpoint, API key, forced model, and endpoint model loading.
+- **Model Mapping**: mappings for the six supported Antigravity model aliases.
 - **Proxy & System**: proxy start, DNS/certificate actions, Antigravity trust, and live status cards.
+- **Logs**: backend and proxy logs for debugging.
+- **Settings**: runtime paths, plus persistent light/dark/system theme and English/Vietnamese language controls in the header.
 
 Use `Apply DNS & Cert` in the **Proxy & System** tab to generate/trust the certificate and write the hosts redirect. The GUI never asks for your sudo password; the operating system prompts for administrator approval when required.
 
@@ -130,9 +133,7 @@ Useful options:
 - `--model`: force all intercepted requests to this upstream model
 - `--map source=target`: add Antigravity model mapping; can be repeated
 - `--model-map-file`: JSON mapping file, for example `{ "gemini-2.5-pro": "ag/gemini-2.5-pro" }`
-- `--model-prefix`: prefix applied to custom aliases when no exact mapping exists. Built-in Antigravity models do not use this fallback.
-- `--always-intercept`: intercept even when no mapping or prefix fallback exists. Default is off.
-- `--mock-model-list`: return local custom aliases for `fetchAvailableModels`. Default is on for custom aliases; disable it to pass model-list requests through.
+- `--always-intercept`: intercept even when no explicit mapping exists. Default is off.
 - `gui`: starts the local configuration UI
 - `--ui-port`: local GUI port. Default: `20245`
 - `--no-open`: start the GUI server without opening a browser
@@ -164,8 +165,9 @@ The Tauri app's main screen includes `Start Proxy & Trust` and `Stop Proxy` cont
 
 The GUI never asks for or stores your sudo password. Privileged actions use the operating system's native administrator prompt when elevation is needed.
 
-The `Model Mapping` tab is for built-in mappings and custom model aliases. Built-in Antigravity models use explicit mappings when configured, otherwise chat requests pass through to Google. Use `+ Create custom model` to define the Antigravity-visible name, upstream model, and optional `reasoning_effort`. Keep `Expose custom aliases to Antigravity model list` enabled to advertise these custom aliases to Antigravity.
-Built-in Antigravity model rows cannot be deleted in the Mapping tab. Only custom models show a Remove action. Use `Save Mapping & Reload Proxy` after editing mappings so the running proxy process reloads the updated settings.
+The GUI supports light, dark, and system theme modes, plus English and Vietnamese labels. These display preferences are stored locally in the Tauri/WebView profile and do not affect proxy routing config.
+
+The `Model Mapping` tab maps only these six built-in Antigravity aliases: `gemini-3.1-pro-high`, `gemini-3.1-pro-low`, `gemini-3-flash`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`. Unmapped models pass through to Google. Use `Save Mapping & Reload Proxy` after editing mappings so the running proxy process reloads the updated settings.
 By default, `npm run build` and `npm run tauri:build` strip `apiKey` from packaged settings so packaged builds do not carry your local secret. Set `MITM_COPY_SETTINGS_WITH_SECRETS=true` only for a private build where you explicitly want to copy the key.
 
 ## Notes

@@ -1,5 +1,4 @@
 const {
-  DEFAULT_MODEL_PREFIX,
   DEFAULT_REMOTE,
   DEFAULT_TARGET,
   DEFAULT_TARGET_HOSTS,
@@ -21,7 +20,7 @@ const {
   writeConfig,
 } = require("./config");
 const { isRoot } = require("./system");
-const { normalizePrefix, parseInlineModelMap } = require("./models");
+const { parseInlineModelMap } = require("./models");
 const { runGui } = require("./gui");
 const {
   certExists,
@@ -62,9 +61,6 @@ Options:
   --model             Force all intercepted requests to this upstream model
   --always-intercept  Intercept chat endpoints even without model mapping (default: false)
   --always-intercept=false  Require an explicit Antigravity mapping before intercepting
-  --mock-model-list   Return mapped Antigravity aliases for fetchAvailableModels
-  --mock-model-list=false  Passthrough Antigravity model list to Google
-  --model-prefix      Prefix to apply when no mapping (default: ag/)
   --model-map-file    JSON map file: { "modelA": "modelB" }
   --map               Add mapping source=target. Can be repeated
   --max-retries       Maximum retry attempts for 503 errors (default: 5)
@@ -170,8 +166,8 @@ async function main() {
     apiKey: args["api-key"] || process.env.ROUTER_API_KEY || savedConfig.apiKey || "",
     model: args.model || process.env.MITM_MODEL || savedConfig.model || "",
     alwaysIntercept: savedConfig.alwaysIntercept === true,
-    mockModelList: savedConfig.mockModelList === true,
-    modelPrefix: normalizePrefix(args["model-prefix"] || process.env.MITM_MODEL_PREFIX || savedConfig.modelPrefix),
+    mockModelList: false,
+    modelPrefix: "",
     modelMap: {
       ...(savedConfig.modelMap || {}),
       ...fileModelMap,
@@ -192,15 +188,6 @@ async function main() {
   } else if (typeof process.env.MITM_ALWAYS_INTERCEPT !== "undefined") {
     const envVal = String(process.env.MITM_ALWAYS_INTERCEPT).toLowerCase();
     options.alwaysIntercept = envVal === "1" || envVal === "true" || envVal === "yes";
-  }
-
-  if (typeof args["mock-model-list"] !== "undefined") {
-    const val = args["mock-model-list"];
-    if (val === "false" || val === "0") options.mockModelList = false;
-    else options.mockModelList = true;
-  } else if (typeof process.env.MITM_MOCK_MODEL_LIST !== "undefined") {
-    const envVal = String(process.env.MITM_MOCK_MODEL_LIST).toLowerCase();
-    options.mockModelList = envVal === "1" || envVal === "true" || envVal === "yes";
   }
 
   if (cmd === "gui" || cmd === "ui") {

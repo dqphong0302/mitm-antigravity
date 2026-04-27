@@ -13,7 +13,7 @@
     "status": "node index.js status",
     "stop": "node index.js stop",
     "test": "node --test",
-    "check": "node --check index.js && node --check src/args.js && node --check src/cert.js && node --check src/cli.js && node --check src/config.js && node --check src/constants.js && node --check src/dns.js && node --check src/gui.js && node --check src/http.js && node --check src/index.js && node --check src/logging.js && node --check src/models.js && node --check src/proxy-control.js && node --check src/proxy.js && node --check src/system.js && node --check scripts/copy-settings.js && node --check scripts/prepare-tauri.js",
+    "check": "node --check index.js && node --check src/args.js && node --check src/cert.js && node --check src/cli.js && node --check src/config.js && node --check src/constants.js && node --check src/dns.js && node --check src/gui.js && node --check src/gui/client.js && node --check src/gui/i18n.js && node --check src/gui/styles.js && node --check src/gui/template.js && node --check src/http.js && node --check src/index.js && node --check src/logging.js && node --check src/models.js && node --check src/proxy-control.js && node --check src/proxy.js && node --check src/system.js && node --check scripts/copy-settings.js && node --check scripts/prepare-tauri.js",
     "build:pkg": "pkg . --targets node18-macos-arm64,node18-macos-x64,node18-win-x64 --out-path dist && node scripts/copy-settings.js",
     "build": "npm run tauri:build",
     "tauri:prepare": "node scripts/prepare-tauri.js",

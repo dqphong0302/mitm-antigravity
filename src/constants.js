@@ -31,6 +31,14 @@ const ANTIGRAVITY_ALIASES = [
   "tab_flash_lite_preview",
   "tab_jump_flash_lite_preview",
 ];
+const MAPPABLE_ANTIGRAVITY_ALIASES = [
+  "gemini-3.1-pro-high",
+  "gemini-3.1-pro-low",
+  "gemini-3-flash",
+  "claude-sonnet-4-6",
+  "claude-opus-4-6-thinking",
+  "gpt-oss-120b-medium",
+];
 
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
@@ -49,9 +57,9 @@ const DEFAULT_CONFIG = {
   routerUrl: DEFAULT_ROUTER_URL,
   apiKey: "",
   model: "",
-  modelPrefix: DEFAULT_MODEL_PREFIX,
+  modelPrefix: "",
   alwaysIntercept: false,
-  mockModelList: true,
+  mockModelList: false,
   modelMap: {},
   maxRetries: 5,
   retryDelay: 1000,
@@ -75,4 +83,5 @@ module.exports = {
   IS_MAC,
   IS_WIN,
   LEGACY_DEFAULT_MODEL_MAP,
+  MAPPABLE_ANTIGRAVITY_ALIASES,
 };

@@ -90,7 +90,7 @@ test("model list includes built-in Antigravity aliases without explicit mappings
   assert.ok(list.models["claude-opus-4-6-thinking"]);
 });
 
-test("merged model list preserves upstream account metadata and adds custom aliases", () => {
+test("model list merge is passthrough and does not add custom aliases", () => {
   const upstream = {
     account: { verified: true },
     agentModelSorts: [
@@ -100,28 +100,36 @@ test("merged model list preserves upstream account metadata and adds custom alia
     commitMessageModelIds: ["gemini-2.5-pro"],
     models: {
       "gemini-2.5-pro": { id: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro", quotaInfo: { remainingFraction: 0.5 } },
+      "chat_23310": { id: "chat_23310", displayName: "Internal Chat", model: "MODEL_CHAT_23310", disabled: false, isInternal: true },
+      "claude-opus-4-6-thinking": {
+        id: "claude-opus-4-6-thinking",
+        displayName: "Claude Opus 4.6 Thinking",
+        model: "MODEL_PLACEHOLDER_M26",
+        supportsImages: true,
+        supportedMimeTypes: { "image/png": true },
+        quotaInfo: { remainingFraction: 0.75 },
+      },
     },
   };
 
   const result = mitm.mergeAntigravityModelListPayload(upstream, {
     modelMap: {
-      "gemini-2.5-pro": "cx/override-should-not-replace-upstream",
+      "gemini-3-flash": "cx/gemini-3-flash",
       "custom-router-model": "cx/custom-router-model",
     },
   });
 
+  assert.equal(result.payload, upstream);
   assert.equal(result.payload.account.verified, true);
   assert.equal(result.payload.models["gemini-2.5-pro"].quotaInfo.remainingFraction, 0.5);
-  assert.ok(result.payload.models["custom-router-model"]);
-  assert.ok(result.added.includes("custom-router-model"));
-  assert.equal(result.payload.models["custom-router-model"].model, "PLACEHOLDER_M0");
-  assert.ok(result.payload.commandModelIds.includes("custom-router-model"));
-  assert.ok(result.payload.commitMessageModelIds.includes("custom-router-model"));
-  assert.ok(result.payload.agentModelSorts[0].groups.some((group) => group.modelIds.includes("custom-router-model")));
+  assert.equal(result.payload.models["custom-router-model"], undefined);
+  assert.deepEqual(result.added, []);
+  assert.equal(result.existingCount, 3);
+  assert.equal(result.totalCount, 3);
   assert.equal(result.payload.models["gemini-3-pro-high"], undefined);
 });
 
-test("merged user status model config data adds custom aliases to Antigravity dropdown", () => {
+test("user status model config merge is passthrough", () => {
   const upstream = {
     userStatus: {
       cascadeModelConfigData: {
@@ -133,7 +141,7 @@ test("merged user status model config data adds custom aliases to Antigravity dr
           },
         ],
         clientModelSorts: [
-          { name: "Agent", groups: [{ groupName: "All", modelLabels: ["Gemini 2.5 Pro"] }] },
+          { name: "Recommended", groups: [{ groupName: "Recommended", modelLabels: ["Gemini 2.5 Pro"] }] },
         ],
       },
     },
@@ -144,23 +152,28 @@ test("merged user status model config data adds custom aliases to Antigravity dr
   });
 
   const configData = result.payload.userStatus.cascadeModelConfigData;
-  assert.ok(result.added.includes("custom-router-model (cx/custom-router-model)"));
-  assert.ok(configData.clientModelConfigs.some((config) => {
-    return config.label === "custom-router-model (cx/custom-router-model)"
-      && config.modelOrAlias.choice.value === "PLACEHOLDER_M0";
-  }));
-  assert.ok(configData.clientModelSorts[0].groups.some((group) => {
-    return group.groupName === "Custom" && group.modelLabels.includes("custom-router-model (cx/custom-router-model)");
-  }));
+  assert.equal(result.payload, upstream);
+  assert.deepEqual(result.added, []);
+  assert.deepEqual(result.paths, []);
+  assert.equal(configData.clientModelConfigs.length, 1);
+  assert.deepEqual(configData.clientModelSorts[0].groups[0].modelLabels, ["Gemini 2.5 Pro"]);
 });
 
-test("custom placeholder model ids route back to mapped custom aliases", () => {
-  const options = { modelMap: { "custom-router-model": "cx/custom-router-model" } };
+test("placeholder model ids route only to mapped built-in aliases", () => {
+  const options = {
+    modelMap: {
+      "claude-opus-4-6-thinking": "cx/opus",
+      "custom-router-model": "cx/custom-router-model",
+    },
+  };
 
-  assert.equal(mitm.customModelEnumForAlias("custom-router-model", options), "PLACEHOLDER_M0");
-  assert.equal(mitm.customAliasForModelEnum("PLACEHOLDER_M0", options), "custom-router-model");
-  assert.equal(mitm.extractModelFromBody(Buffer.from(JSON.stringify({ model: "PLACEHOLDER_M0" }))), "PLACEHOLDER_M0");
-  assert.equal(mitm.getMappedEntry("PLACEHOLDER_M0", options).model, "cx/custom-router-model");
+  assert.equal(mitm.extractModelFromBody(Buffer.from(JSON.stringify({
+    request: { plannerConfig: { requestedModel: { choice: { case: "alias", value: "claude-opus-4-6-thinking" } } } },
+  }))), "claude-opus-4-6-thinking");
+  assert.equal(mitm.getMappedEntry("MODEL_PLACEHOLDER_M26", options).model, "cx/opus");
+  assert.equal(mitm.getMappedEntry("291", options).model, "cx/opus");
+  assert.equal(mitm.getMappedEntry("claude-opus-4-6-thinking", options).model, "cx/opus");
+  assert.equal(mitm.getMappedEntry("custom-router-model", options), null);
 });
 
 test("chat model detection handles nested Antigravity model names", () => {
@@ -183,35 +196,46 @@ test("chat model detection handles nested Antigravity model names", () => {
   assert.match(mitm.summarizeRequestBodyForLog(body), /defaultAgentModelId=/);
 });
 
-test("normalizeModelMap removes generated built-in ag prefix mappings", () => {
+test("normalizeModelMap keeps only the six mappable built-in aliases", () => {
   const result = mitm.normalizeModelMap({
     "claude-opus-4-6-thinking": "ag/claude-opus-4-6-thinking",
+    "gemini-3-flash": { model: "cx/gemini-3-flash", reasoning_effort: "low" },
+    "gpt-oss-120b-medium": "cx/gpt-oss",
+    "gemini-2.5-pro": "cx/not-mappable",
     "custom-router-model": "cx/custom-router-model",
   });
 
   assert.equal(result["claude-opus-4-6-thinking"], undefined);
-  assert.equal(result["custom-router-model"], "cx/custom-router-model");
+  assert.deepEqual(result["gemini-3-flash"], { model: "cx/gemini-3-flash", reasoning_effort: "low" });
+  assert.equal(result["gpt-oss-120b-medium"], "cx/gpt-oss");
+  assert.equal(result["gemini-2.5-pro"], undefined);
+  assert.equal(result["custom-router-model"], undefined);
 });
 
 test("proxy defaults to passthrough except model list and LLM endpoints", () => {
   assert.equal(mitm.isFetchAvailableModelsRequest("/v1internal:fetchAvailableModels"), true);
+  assert.equal(mitm.isLoadCodeAssistRequest("/v1internal:loadCodeAssist"), true);
   assert.equal(mitm.isChatRequestUrl("/v1internal:streamGenerateContent"), true);
   assert.equal(mitm.isAccountBootstrapRequest("/v1internal:fetchUserInfo"), true);
   assert.equal(mitm.isChatRequestUrl("/v1internal:fetchUserInfo"), false);
   assert.equal(mitm.isAccountBootstrapRequest("/v1internal:streamGenerateContent"), false);
 });
 
-test("readConfig keeps legacy runtime config over stripped bundled settings", () => {
+test("readConfig keeps legacy runtime config and drops custom model mappings", () => {
   const legacyPath = path.join(tempRoot, "config.json");
   fs.writeFileSync(legacyPath, JSON.stringify({
     routerUrl: "http://legacy.local/v1/chat/completions",
-    modelMap: { "custom-antigravity-model": "upstream/custom" },
+    modelMap: {
+      "gemini-3-flash": "upstream/gemini-3-flash",
+      "custom-antigravity-model": "upstream/custom",
+    },
   }));
 
   const config = mitm.readConfig();
 
   assert.equal(config.routerUrl, "http://legacy.local/v1/chat/completions");
-  assert.equal(config.modelMap["custom-antigravity-model"], "upstream/custom");
+  assert.equal(config.modelMap["gemini-3-flash"], "upstream/gemini-3-flash");
+  assert.equal(config.modelMap["custom-antigravity-model"], undefined);
 });
 
 test("logging helpers expose backend and proxy logs", () => {
@@ -245,10 +269,17 @@ test("macOS proxy LaunchDaemon plist uses launchd arguments instead of nohup", (
 test("config tab combines model loading and saving", () => {
   const html = mitm.guiHtml();
 
-  assert.match(html, /Test, Load &amp; Save/);
+  assert.match(html, /Test, Load & Save/);
   assert.doesNotMatch(html, /id="saveBtn"/);
-  assert.match(html, /<select id="newAliasModel"/);
-  assert.match(html, /Custom upstream model/);
+  assert.doesNotMatch(html, /newAlias/);
+  assert.doesNotMatch(html, /Create custom model/);
+  assert.doesNotMatch(html, /id="mockModelList"/);
+  assert.doesNotMatch(html, /Expose custom aliases/);
+  assert.match(html, /Built-in Model Mapping/);
+  assert.match(html, /id="themeSelect"/);
+  assert.match(html, /id="languageSelect"/);
+  assert.match(html, /Tiếng Việt/);
+  assert.match(html, /data-panel="dashboard"/);
 });
 
 test("proxy can start on an unprivileged port and stopProxyByPort stops it", async (t) => {

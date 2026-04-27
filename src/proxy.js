@@ -3,7 +3,7 @@ const https = require("https");
 const fs = require("fs");
 const { promisify } = require("util");
 
-const { ANTIGRAVITY_ALIASES, APP_NAME, DEFAULT_TARGET } = require("./constants");
+const { APP_NAME, DEFAULT_TARGET } = require("./constants");
 const { certPaths } = require("./cert");
 const { primaryTargetHost, targetHostsFrom } = require("./config");
 const { collectBodyRaw, sendJson } = require("./http");
@@ -13,11 +13,8 @@ const {
   extractModelFromBody,
   extractModelFromUrl,
   getMappedEntry,
-  mergeAntigravityModelListPayload,
-  mergeCascadeModelConfigsInPayload,
   modelAliasFromName,
   summarizeAntigravityModelsResponse,
-  summarizeCascadeModelConfigs,
   summarizeRequestBodyForLog,
 } = require("./models");
 
@@ -41,8 +38,6 @@ const ACCOUNT_BOOTSTRAP_PATTERNS = [
   ":fetchAvailableModels",
   "/agentPlugins",
 ];
-const ANTIGRAVITY_ALIAS_SET = new Set(ANTIGRAVITY_ALIASES);
-
 function isChatRequestUrl(reqUrl) {
   return CHAT_URL_PATTERNS.some((pattern) => String(reqUrl || "").includes(pattern));
 }
@@ -53,6 +48,16 @@ function isFetchAvailableModelsRequest(reqUrl) {
 
 function isFetchUserInfoRequest(reqUrl) {
   return String(reqUrl || "").includes(":fetchUserInfo");
+}
+
+function isLoadCodeAssistRequest(reqUrl) {
+  return String(reqUrl || "").includes(":loadCodeAssist");
+}
+
+function isModelBootstrapMergeRequest(reqUrl) {
+  return isFetchAvailableModelsRequest(reqUrl)
+    || isFetchUserInfoRequest(reqUrl)
+    || isLoadCodeAssistRequest(reqUrl);
 }
 
 function isAccountBootstrapRequest(reqUrl) {
@@ -190,64 +195,23 @@ async function runProxy(options) {
       servername: targetHost,
       rejectUnauthorized: false,
     }, (forwardRes) => {
-      if (isFetchAvailableModelsRequest(req.url) || isFetchUserInfoRequest(req.url)) {
+      if (isModelBootstrapMergeRequest(req.url)) {
         const chunks = [];
         forwardRes.on("data", (chunk) => chunks.push(chunk));
         forwardRes.on("end", () => {
           const raw = Buffer.concat(chunks);
           const modelSummary = summarizeAntigravityModelsResponse(raw, forwardRes.headers);
-
-          if (options.mockModelList !== true || forwardRes.statusCode < 200 || forwardRes.statusCode >= 300) {
-            logPassthroughResponse({
-              req,
-              statusCode: forwardRes.statusCode,
-              targetHost,
-              requestPath,
-              raw,
-              headers: forwardRes.headers,
-              extra: `bytes=${raw.length} ${modelSummary}`,
-            });
-            res.writeHead(forwardRes.statusCode, forwardRes.headers);
-            res.end(raw);
-            return;
-          }
-
-          try {
-            const decoded = decodeResponseBody(raw, forwardRes.headers);
-            const upstreamPayload = decoded.length > 0 ? JSON.parse(decoded.toString("utf8")) : {};
-            const isModelList = isFetchAvailableModelsRequest(req.url);
-            const merged = isModelList
-              ? mergeAntigravityModelListPayload(upstreamPayload, options)
-              : mergeCascadeModelConfigsInPayload(upstreamPayload, options);
-            const payload = Buffer.from(JSON.stringify(merged.payload));
-            const headers = {
-              ...forwardRes.headers,
-              "content-type": "application/json; charset=utf-8",
-              "content-length": String(payload.length),
-            };
-            delete headers["content-encoding"];
-            delete headers["transfer-encoding"];
-            if (isModelList) {
-              console.log(`AUTH MODELS+MERGE ${forwardRes.statusCode} ${req.method} ${targetHost}${requestPath} upstream=${merged.existingCount} added=${merged.added.length} total=${merged.totalCount} aliases=${merged.added.join(",") || "-"}`);
-            } else {
-              console.log(`AUTH USER+MODELS ${forwardRes.statusCode} ${req.method} ${targetHost}${requestPath} added=${merged.added.length} labels=${merged.added.join(",") || "-"} ${summarizeCascadeModelConfigs(merged.payload)}`);
-            }
-            res.writeHead(forwardRes.statusCode, headers);
-            res.end(payload);
-          } catch (error) {
-            console.error(`Model config merge failed; passing upstream response unchanged: ${error.message}`);
-            logPassthroughResponse({
-              req,
-              statusCode: forwardRes.statusCode,
-              targetHost,
-              requestPath,
-              raw,
-              headers: forwardRes.headers,
-              extra: `bytes=${raw.length} ${modelSummary}`,
-            });
-            res.writeHead(forwardRes.statusCode, forwardRes.headers);
-            res.end(raw);
-          }
+          logPassthroughResponse({
+            req,
+            statusCode: forwardRes.statusCode,
+            targetHost,
+            requestPath,
+            raw,
+            headers: forwardRes.headers,
+            extra: `bytes=${raw.length} ${modelSummary}`,
+          });
+          res.writeHead(forwardRes.statusCode, forwardRes.headers);
+          res.end(raw);
         });
         return;
       }
@@ -367,7 +331,7 @@ async function runProxy(options) {
 
     if (isAccountBootstrapRequest(req.url)) {
       if (isFetchAvailableModelsRequest(req.url)) {
-        console.log(`AUTH MODELS ${req.method} ${String(req.headers.host || "").split(":")[0]}${safeRequestPath(req.url)} -> passthrough${options.mockModelList === true ? "+merge" : ""}`);
+        console.log(`AUTH MODELS ${req.method} ${String(req.headers.host || "").split(":")[0]}${safeRequestPath(req.url)} -> passthrough`);
       }
       return passthrough(req, res, bodyBuffer);
     }
@@ -383,12 +347,7 @@ async function runProxy(options) {
 
     const model = extractModelFromBody(bodyBuffer) || extractModelFromUrl(req.url);
     const modelAlias = modelAliasFromName(model);
-    const mappedEntry = getMappedEntry(model, options);
-    let effectiveEntry = mappedEntry;
-
-    if (!effectiveEntry && options.modelPrefix && modelAlias && !ANTIGRAVITY_ALIAS_SET.has(modelAlias)) {
-      effectiveEntry = { model: `${options.modelPrefix}${modelAlias}` };
-    }
+    const effectiveEntry = getMappedEntry(model, options);
 
     if (!options.alwaysIntercept && !effectiveEntry) {
       console.log(`CHAT PASS unmapped model=${model || "unknown"} ${String(req.headers.host || "").split(":")[0]}${safeRequestPath(req.url)} ${summarizeRequestBodyForLog(bodyBuffer)}`);
@@ -430,6 +389,7 @@ module.exports = {
   isAccountBootstrapRequest,
   isChatRequestUrl,
   isFetchAvailableModelsRequest,
+  isLoadCodeAssistRequest,
   retryWithBackoff,
   runProxy,
   safeRequestPath,
