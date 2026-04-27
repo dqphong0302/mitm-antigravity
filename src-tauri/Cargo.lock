@@ -1840,7 +1840,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mitm-antigravity-tauri"
+name = "mitm-ag-tauri"
 version = "0.2.0"
 dependencies = [
  "tauri",
