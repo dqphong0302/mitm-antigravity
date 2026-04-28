@@ -322,8 +322,8 @@ function guiStyles() {
     .log-path { min-height: 28px; color: var(--accent-strong); font-family: var(--mono); font-size: 11px; word-break: break-all; margin-bottom: 8px; }
     .log-output {
       width: 100%;
-      min-height: clamp(220px, 34vh, 320px);
-      max-height: 520px;
+      min-height: 180px;
+      max-height: 320px;
       overflow: auto;
       margin: 0;
       padding: 12px;
