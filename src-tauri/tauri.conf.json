@@ -27,7 +27,7 @@
     "bundle": {
         "active": true,
         "targets": [
-            "app"
+            "nsis"
         ],
         "resources": [
             "resources/mitm-ag-backend*",
@@ -43,6 +43,12 @@
         ],
         "macOS": {
             "minimumSystemVersion": "10.13"
+        },
+        "windows": {
+            "nsis": {
+                "installerIcon": "icons/icon.ico",
+                "installMode": "perMachine"
+            }
         }
     }
 }

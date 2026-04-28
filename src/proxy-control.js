@@ -143,14 +143,30 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
   }
 
   const logPath = proxyLogPath();
-  appendLog("info", "Starting proxy process", { port, targetHost, logPath });
+  appendLog("info", "Starting proxy process", { port, targetHost, logPath, execPath: process.execPath, pkg: Boolean(process.pkg), runtimeDir: runtimeDir() });
 
   if (IS_WIN) {
+    const { isWindowsElevated } = require("./system");
     const { cliEntrypointPath } = require("./config");
-    const windowsArgs = process.pkg
-      ? `start --skip-setup --port ${Number(port)}`
-      : `${cliEntrypointPath()} start --skip-setup --port ${Number(port)}`;
-    await execPowerShell(`Start-Process -FilePath '${process.execPath.replace(/'/g, "''")}' -ArgumentList '${windowsArgs.replace(/'/g, "''")}' -WorkingDirectory '${runtimeDir().replace(/'/g, "''")}' `, { elevated: true });
+    if (await isWindowsElevated()) {
+      const { spawn } = require("child_process");
+      const out = fs.openSync(logPath, "a");
+      const args = process.pkg
+        ? ["start", "--skip-setup", "--port", String(port)]
+        : [cliEntrypointPath(), "start", "--skip-setup", "--port", String(port)];
+      const child = spawn(process.execPath, args, {
+        detached: true,
+        stdio: ["ignore", out, out],
+        cwd: runtimeDir(),
+        windowsHide: true,
+      });
+      child.unref();
+    } else {
+      const windowsArgs = process.pkg
+        ? `start --skip-setup --port ${Number(port)}`
+        : `${cliEntrypointPath()} start --skip-setup --port ${Number(port)}`;
+      await execPowerShell(`Start-Process -FilePath '${process.execPath.replace(/'/g, "''")}' -ArgumentList '${windowsArgs.replace(/'/g, "''")}' -WorkingDirectory '${runtimeDir().replace(/'/g, "''")}' -WindowStyle Hidden`, { elevated: true });
+    }
   } else if (IS_MAC) {
     await bootstrapMacProxyLaunchDaemon({ sudoPassword, port, logPath });
   } else {

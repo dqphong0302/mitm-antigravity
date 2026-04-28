@@ -1,3 +1,6 @@
+// Hide the console window on Windows in release builds
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::{
     env,
     fs::OpenOptions,
@@ -9,6 +12,38 @@ use std::{
 };
 
 use tauri::Manager;
+
+/// Returns true if the current process is running with administrator privileges.
+#[cfg(target_os = "windows")]
+fn is_elevated() -> bool {
+    use std::os::windows::process::CommandExt;
+    Command::new("net")
+        .arg("session")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Relaunch the current executable with UAC elevation via PowerShell.
+#[cfg(target_os = "windows")]
+fn relaunch_as_admin() {
+    use std::os::windows::process::CommandExt;
+    if let Ok(exe) = std::env::current_exe() {
+        let exe_str = exe.to_string_lossy().replace('\'', "''");
+        let cmd = format!("Start-Process -FilePath '{}' -Verb RunAs", exe_str);
+        let _ = Command::new("powershell")
+            .args(["-WindowStyle", "Hidden", "-Command", &cmd])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn();
+    }
+}
 
 const GUI_URL: &str = "http://127.0.0.1:20245/";
 
@@ -103,6 +138,13 @@ fn start_backend(app: &tauri::App) -> Result<BackendProcess, String> {
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(stderr_log));
 
+    // Hide console window for the backend child process on Windows
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -127,6 +169,14 @@ fn wait_for_gui() -> bool {
 }
 
 fn main() {
+    // On Windows: if not running as administrator, relaunch with UAC elevation.
+    // Port 443 requires elevated privileges to bind on Windows.
+    #[cfg(target_os = "windows")]
+    if !is_elevated() {
+        relaunch_as_admin();
+        return;
+    }
+
     tauri::Builder::default()
         .setup(|app| {
             cleanup_stale_backend_port();

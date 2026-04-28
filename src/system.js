@@ -22,6 +22,16 @@ function execPromise(command) {
   });
 }
 
+async function isWindowsElevated() {
+  if (!IS_WIN) return false;
+  try {
+    await execPromise("net session");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
@@ -75,6 +85,7 @@ module.exports = {
   execPromise,
   execWithSudo,
   isRoot,
+  isWindowsElevated,
   openBrowser,
   shellQuote,
 };
