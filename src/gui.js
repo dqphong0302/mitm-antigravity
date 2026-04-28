@@ -1,4 +1,3 @@
-const crypto = require("crypto");
 const http = require("http");
 
 const {
@@ -20,7 +19,7 @@ const {
 } = require("./config");
 const { fetchAvailableModels, normalizeModelMap } = require("./models");
 const { readRequestJson, sendJson } = require("./http");
-const { appendLog, clearLogs, errorMeta, logPaths, readRecentLogs } = require("./logging");
+const { appendLog, clearLogs, logPaths, readRecentLogs } = require("./logging");
 const { openBrowser } = require("./system");
 const {
   applyAntigravityNodeTrust,
@@ -30,6 +29,7 @@ const {
   checkCertInstalled,
   generateCert,
   installCert,
+  uninstallCert,
 } = require("./cert");
 const {
   addDNSEntries,
@@ -46,14 +46,39 @@ const {
   stopProxyByPort,
 } = require("./proxy-control");
 const { guiHtml } = require("./gui/template");
+const { sendApiError, sendHtml, sendNotFound } = require("./gui/api-utils");
+const { createGuiRoutes, findGuiRoute } = require("./gui/routes");
 
 function guiPresets() {
   return {};
 }
 
-function requestId() {
-  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+function createRouteHandlers(options) {
+  return {
+    handleBootstrap: (_req, res) => handleBootstrap(res),
+    handleLogs: (_req, res) => sendJson(res, 200, readRecentLogs()),
+    handleSaveConfig,
+    handleExportConfig: (_req, res) => handleExportConfig(res),
+    handleImportConfig,
+    handleCheckKey,
+    handleStartProxy: (req, res) => handleStartProxy(req, res, options),
+    handleStartProxyOnly: (req, res) => handleStartProxyOnly(req, res, options),
+    handleStopProxy: (req, res) => handleStopProxy(req, res, options),
+    handleStopAndCleanup: (req, res) => handleStopAndCleanup(req, res, options),
+    handleReloadProxy: (req, res) => handleReloadProxy(req, res, options),
+    handleApplyDns: (req, res) => handleApplyDns(req, res, options),
+    handleApplyAppTrust: (_req, res) => handleApplyAppTrust(res),
+    handleRemoveDns,
+    handleUninstallCert,
+    handleDoctor: (_req, res) => handleDoctor(res, options),
+    handleAutoStartStatus: async (_req, res) => sendJson(res, 200, await autoStartStatus()),
+    handleEnableAutoStart,
+    handleDisableAutoStart,
+    handleStatus: (_req, res) => handleStatus(res, options),
+    handleClearLogs,
+  };
 }
+
 
 async function handleBootstrap(res) {
   sendJson(res, 200, {
@@ -123,7 +148,7 @@ async function handleStartProxy(req, res, options) {
   const port = Number(cfg.port || options.port || 443);
   const targetHost = primaryTargetHost(cfg);
   let restarted = false;
-  appendLog("info", "Start Proxy & Trust requested", { port, targetHost, targetHosts, cert: certResult, dns: dnsResult });
+  appendLog("info", "Proxy start requested", { port, targetHosts: targetHosts.length });
   if (await checkProxyHealth(port, targetHost)) {
     await stopProxyByPort({ sudoPassword, port, targetHost });
     restarted = true;
@@ -138,6 +163,28 @@ async function handleStartProxy(req, res, options) {
   sendJson(res, 200, { ...result, restarted, cert: certResult, dns: dnsResult, nodeTrust });
 }
 
+async function handleStartProxyOnly(req, res, options) {
+  const body = await readRequestJson(req);
+  const cfg = readConfig();
+  const sudoPassword = String(body.sudoPassword || "");
+  const port = Number(cfg.port || options.port || 443);
+  const targetHost = primaryTargetHost(cfg);
+  let restarted = false;
+  appendLog("info", "Proxy-only start requested", { port, targetHost });
+  if (await checkProxyHealth(port, targetHost)) {
+    await stopProxyByPort({ sudoPassword, port, targetHost });
+    restarted = true;
+  }
+  const result = await startProxyDetached({ sudoPassword, port, targetHost });
+  appendLog("info", "Proxy started without setup from UI", {
+    port,
+    targetHost,
+    restarted,
+    alreadyRunning: result.alreadyRunning,
+  });
+  sendJson(res, 200, { ...result, restarted, setupSkipped: true });
+}
+
 async function handleStopProxy(req, res, options) {
   const body = await readRequestJson(req);
   const cfg = readConfig();
@@ -147,8 +194,32 @@ async function handleStopProxy(req, res, options) {
     port: Number(cfg.port || options.port || 443),
     targetHost: primaryTargetHost(cfg),
   });
-  appendLog("info", "Stop proxy requested from UI", result);
+  appendLog("info", "Proxy stop requested", {
+    port: Number(cfg.port || options.port || 443),
+    stopped: result.stopped,
+  });
   sendJson(res, 200, result);
+}
+
+async function handleStopAndCleanup(req, res, options) {
+  const body = await readRequestJson(req);
+  const cfg = readConfig();
+  const sudoPassword = String(body.sudoPassword || "");
+  const port = Number(cfg.port || options.port || 443);
+  const targetHosts = targetHostsFrom(cfg);
+  const stop = await stopProxyByPort({
+    sudoPassword,
+    port,
+    targetHost: primaryTargetHost(cfg),
+  });
+  const dns = await removeDNSEntries({ targetHosts, sudoPassword });
+  appendLog("info", "Proxy stopped and DNS cleanup requested", {
+    port,
+    stopped: stop.stopped,
+    dnsRemoved: dns.removed,
+    targetHosts: targetHosts.length,
+  });
+  sendJson(res, 200, { stop, dns });
 }
 
 async function handleReloadProxy(req, res, options) {
@@ -186,11 +257,11 @@ async function handleApplyDns(req, res, options) {
     remoteIp: cfg.remoteIp || options.remoteIp,
     sudoPassword,
   });
-  appendLog("info", "DNS and certificate applied from UI", {
-    targetHosts,
-    cert: certResult,
-    dns: dnsResult,
-    nodeTrust,
+  appendLog("info", "DNS/cert applied", {
+    targetHosts: targetHosts.length,
+    dnsAdded: dnsResult.added,
+    certInstalled: certResult.installed,
+    nodeTrustApplied: nodeTrust.applied,
   });
   sendJson(res, 200, { cert: certResult, dns: dnsResult, nodeTrust });
 }
@@ -200,7 +271,7 @@ async function handleApplyAppTrust(res) {
   const targetHosts = targetHostsFrom(cfg);
   const cert = await generateCert(targetHosts, { force: false });
   const nodeTrust = await applyAntigravityNodeTrust(cert.cert);
-  appendLog("info", "Antigravity Node trust applied from UI", { targetHosts, nodeTrust });
+  appendLog("info", "App trust applied", { targetHosts: targetHosts.length, applied: nodeTrust.applied });
   sendJson(res, 200, { nodeTrust });
 }
 
@@ -212,11 +283,11 @@ async function handleRemoveDns(req, res) {
     targetHosts: targetHostsFrom(cfg),
     sudoPassword,
   });
-  appendLog("info", "DNS removed from UI", { dns: dnsResult });
+  appendLog("info", "DNS removed", { removed: dnsResult.removed });
   sendJson(res, 200, { dns: dnsResult });
 }
 
-async function handleStatus(res, options) {
+async function collectGuiStatus(options) {
   const cfg = readConfig();
   const { certPath } = certPaths();
   const certEx = certExists();
@@ -224,7 +295,7 @@ async function handleStatus(res, options) {
   const expectedIp = cfg.remoteIp || options.remoteIp || DEFAULT_REMOTE;
   const nodeTrust = certEx ? await checkAntigravityNodeTrust(certPath) : { supported: IS_MAC, applied: false, value: "" };
   const proxyListening = await checkProxyHealth(Number(cfg.port || options.port || 443), targetHosts[0]);
-  sendJson(res, 200, {
+  return {
     proxyListening,
     dnsConfigured: dnsConfiguredForHosts(targetHosts, expectedIp),
     certExists: certEx,
@@ -237,49 +308,90 @@ async function handleStatus(res, options) {
     mappedModels: Object.keys(cfg.modelMap || {}).length,
     machine: machineId(),
     autoStart: await autoStartStatus(),
-  });
+  };
+}
+
+function buildDoctorReport(status) {
+  const checks = [
+    { id: "proxy", label: "Proxy Listener", ok: status.proxyListening, severity: status.proxyListening ? "ok" : "warn" },
+    { id: "dns", label: "DNS Redirect", ok: status.dnsConfigured, severity: status.dnsConfigured ? "ok" : "warn" },
+    { id: "cert", label: "Certificate Generated", ok: status.certExists, severity: status.certExists ? "ok" : "warn" },
+    { id: "trust", label: "System Certificate Trust", ok: status.certInstalled, severity: status.certInstalled ? "ok" : "warn" },
+    { id: "nodeTrust", label: "Antigravity Node Trust", ok: status.nodeTrustSupported ? status.nodeTrustApplied : true, severity: status.nodeTrustSupported && !status.nodeTrustApplied ? "warn" : "ok" },
+    { id: "router", label: "Router URL", ok: Boolean(status.routerUrl), severity: status.routerUrl ? "ok" : "err" },
+    { id: "mapping", label: "Model Mapping", ok: status.mappedModels > 0, severity: status.mappedModels > 0 ? "ok" : "warn" },
+  ];
+  const recommendations = [];
+  if (status.dnsConfigured && !status.proxyListening) recommendations.push("DNS redirect is active while the proxy is stopped. Use Stop & Remove DNS before leaving the tool.");
+  if (!status.dnsConfigured) recommendations.push("DNS is not active. Use Apply DNS & Cert when you want Antigravity traffic to use the proxy.");
+  if (!status.proxyListening) recommendations.push("Proxy is not running. Use Start Proxy & Trust or Start Proxy Only depending on whether setup is already complete.");
+  if (!status.certInstalled && status.certExists) recommendations.push("Certificate exists but is not trusted by the system. Use Apply DNS & Cert.");
+  if (status.nodeTrustSupported && !status.nodeTrustApplied) recommendations.push("Antigravity Node trust is missing. Use Apply DNS & Cert, then restart Antigravity.");
+  if (!status.routerUrl) recommendations.push("Router URL is empty. Configure endpoint and authentication first.");
+  if (status.mappedModels === 0) recommendations.push("No built-in models are mapped. Add model mappings or enable passthrough intentionally.");
+  if (recommendations.length === 0) recommendations.push("Everything looks healthy.");
+  const hasError = checks.some((check) => check.severity === "err");
+  const hasWarn = checks.some((check) => check.severity === "warn");
+  return { summary: hasError ? "error" : (hasWarn ? "warning" : "healthy"), checks, recommendations };
+}
+
+async function handleStatus(res, options) {
+  sendJson(res, 200, await collectGuiStatus(options));
+}
+
+async function handleDoctor(res, options) {
+  const status = await collectGuiStatus(options);
+  const report = buildDoctorReport(status);
+  appendLog("info", "Doctor report requested from UI", { summary: report.summary });
+  sendJson(res, 200, { status, ...report });
+}
+
+async function handleUninstallCert(req, res) {
+  const body = await readRequestJson(req);
+  const cfg = readConfig();
+  const { certPath } = certPaths();
+  const sudoPassword = String(body.sudoPassword || "");
+  const result = certExists()
+    ? await uninstallCert(certPath, primaryTargetHost(cfg), sudoPassword)
+    : { removed: false };
+  appendLog("info", "Certificate uninstall requested from UI", { removed: result.removed });
+  sendJson(res, 200, { cert: result });
+}
+
+async function handleEnableAutoStart(_req, res) {
+  const result = await enableAutoStart();
+  appendLog("info", "Auto start enabled", { method: result.method, enabled: result.enabled });
+  sendJson(res, 200, result);
+}
+
+async function handleDisableAutoStart(_req, res) {
+  const result = await disableAutoStart();
+  appendLog("info", "Auto start disabled", { method: result.method, enabled: result.enabled });
+  sendJson(res, 200, result);
+}
+
+async function handleClearLogs(_req, res) {
+  clearLogs();
+  appendLog("info", "Logs cleared from UI");
+  sendJson(res, 200, { cleared: true, paths: logPaths() });
 }
 
 async function routeGuiRequest(req, res, options) {
   const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
 
   if (req.method === "GET" && url.pathname === "/") {
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-    res.end(guiHtml());
+    sendHtml(res, guiHtml());
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/bootstrap") return handleBootstrap(res);
-  if (req.method === "GET" && url.pathname === "/api/logs") return sendJson(res, 200, readRecentLogs());
-  if (req.method === "PUT" && url.pathname === "/api/config") return handleSaveConfig(req, res);
-  if (req.method === "GET" && url.pathname === "/api/config/export") return handleExportConfig(res);
-  if (req.method === "POST" && url.pathname === "/api/config/import") return handleImportConfig(req, res);
-  if (req.method === "POST" && url.pathname === "/api/check-key") return handleCheckKey(req, res);
-  if (req.method === "POST" && url.pathname === "/api/start-proxy") return handleStartProxy(req, res, options);
-  if (req.method === "POST" && url.pathname === "/api/stop-proxy") return handleStopProxy(req, res, options);
-  if (req.method === "POST" && url.pathname === "/api/reload-proxy") return handleReloadProxy(req, res, options);
-  if (req.method === "POST" && url.pathname === "/api/apply-dns") return handleApplyDns(req, res, options);
-  if (req.method === "POST" && url.pathname === "/api/apply-app-trust") return handleApplyAppTrust(res);
-  if (req.method === "POST" && url.pathname === "/api/remove-dns") return handleRemoveDns(req, res);
-  if (req.method === "GET" && url.pathname === "/api/autostart") return sendJson(res, 200, await autoStartStatus());
-  if (req.method === "POST" && url.pathname === "/api/autostart/enable") {
-    const result = await enableAutoStart();
-    appendLog("info", "Auto start enabled from UI", result);
-    return sendJson(res, 200, result);
-  }
-  if (req.method === "POST" && url.pathname === "/api/autostart/disable") {
-    const result = await disableAutoStart();
-    appendLog("info", "Auto start disabled from UI", result);
-    return sendJson(res, 200, result);
-  }
-  if (req.method === "GET" && url.pathname === "/api/status") return handleStatus(res, options);
-  if (req.method === "POST" && url.pathname === "/api/logs/clear") {
-    clearLogs();
-    appendLog("info", "Logs cleared from UI");
-    return sendJson(res, 200, { cleared: true, paths: logPaths() });
+  const routes = createGuiRoutes(createRouteHandlers(options));
+  const route = findGuiRoute(routes, req.method, url.pathname);
+  if (!route) {
+    sendNotFound(res);
+    return;
   }
 
-  sendJson(res, 404, { error: "Not found" });
+  await route.handler(req, res);
 }
 
 async function handleExportConfig(res) {
@@ -307,17 +419,7 @@ async function runGui(options) {
     try {
       await routeGuiRequest(req, res, options);
     } catch (error) {
-      const id = requestId();
-      appendLog("error", "GUI API request failed", errorMeta(error, {
-        requestId: id,
-        method: req.method,
-        path: req.url,
-      }));
-      sendJson(res, 500, {
-        error: error.message || String(error),
-        requestId: id,
-        logPaths: logPaths(),
-      });
+      sendApiError(req, res, error);
     }
   });
 

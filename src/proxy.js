@@ -13,19 +13,21 @@ const {
   getMappedEntry,
   modelAliasFromName,
 } = require("./models");
-const { summarizeAntigravityModelsResponse, summarizeRequestBodyForLog } = require("./model-serialization");
+const { summarizeAntigravityModelsResponse } = require("./model-serialization");
 const {
   buildRouterHeaders,
   bypassInterceptReason,
   isAccountBootstrapRequest,
   isChatRequestUrl,
-  isFetchAvailableModelsRequest,
   isModelBootstrapMergeRequest,
   logPassthroughResponse,
-  passthroughLogLabel,
   retryWithBackoff,
   safeRequestPath,
 } = require("./proxy-helpers");
+const {
+  logProxyError,
+  logProxyReady,
+} = require("./proxy-logger");
 
 async function runProxy(options) {
   const targetHosts = targetHostsFrom(options);
@@ -103,13 +105,12 @@ async function runProxy(options) {
           return;
         }
 
-        console.log(`${passthroughLogLabel(req.url)} ${forwardRes.statusCode} ${req.method} ${targetHost}${requestPath}`);
         res.writeHead(forwardRes.statusCode, forwardRes.headers);
         forwardRes.pipe(res);
       });
 
       forwardReq.on("error", (err) => {
-        console.error(`Passthrough error: ${err.message}`);
+        logProxyError({ message: `passthrough ${err.message}`, method: req.method, targetHost, requestPath });
         if (!res.headersSent) res.writeHead(502);
         res.end("Bad Gateway");
       });
@@ -117,7 +118,7 @@ async function runProxy(options) {
       if (bodyBuffer.length > 0) forwardReq.write(bodyBuffer);
       forwardReq.end();
     } catch (error) {
-      console.error(`Passthrough error: ${error.message}`);
+      logProxyError({ message: `passthrough ${error.message}` });
       if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain" });
       if (!res.writableEnded) res.end("Bad Gateway");
     }
@@ -176,11 +177,11 @@ async function runProxy(options) {
       }
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const loggedModel = mappedEntry && mappedEntry.model ? mappedEntry.model : originalModel;
-      const reasoning = mappedEntry && mappedEntry.reasoning_effort ? ` reasoning_effort=${mappedEntry.reasoning_effort}` : "";
-      console.log(`OK ${loggedModel || "unknown"}${reasoning} - ${elapsed}s`);
+      if (Number(elapsed) >= 30) {
+        logProxyError({ message: `slow upstream response ${elapsed}s` });
+      }
     } catch (error) {
-      console.error(`ERROR ${error.message}`);
+      logProxyError({ message: error.message });
       if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: { message: error.message, type: "mitm_error" } }));
     }
@@ -202,15 +203,11 @@ async function runProxy(options) {
     const bodyBuffer = await collectBodyRaw(req);
 
     if (isAccountBootstrapRequest(req.url)) {
-      if (isFetchAvailableModelsRequest(req.url)) {
-        console.log(`AUTH MODELS ${req.method} ${String(req.headers.host || "").split(":")[0]}${safeRequestPath(req.url)} -> passthrough`);
-      }
       return passthrough(req, res, bodyBuffer);
     }
 
     const bypassReason = bypassInterceptReason(req);
     if (bypassReason) {
-      console.log(`BYPASS ${req.method} ${String(req.headers.host || "").split(":")[0]}${safeRequestPath(req.url)} reason=${bypassReason}`);
       return passthrough(req, res, bodyBuffer);
     }
 
@@ -222,31 +219,23 @@ async function runProxy(options) {
     const effectiveEntry = getMappedEntry(model, options);
 
     if (!options.alwaysIntercept && !effectiveEntry) {
-      console.log(`CHAT PASS unmapped model=${model || "unknown"} ${String(req.headers.host || "").split(":")[0]}${safeRequestPath(req.url)} ${summarizeRequestBodyForLog(bodyBuffer)}`);
       return passthrough(req, res, bodyBuffer);
     }
-
-    const effectiveModel = effectiveEntry && effectiveEntry.model;
-    if (effectiveModel) {
-      const reasoning = effectiveEntry.reasoning_effort ? ` + reasoning_effort=${effectiveEntry.reasoning_effort}` : "";
-      const modelText = modelAlias && modelAlias !== model ? `${model} (${modelAlias})` : model;
-      console.log(`${modelText || "unknown"} -> ${effectiveModel}${reasoning}`);
-    } else console.log(`${model || "unknown"} -> (no mapping)`);
 
     return intercept(req, res, bodyBuffer, effectiveEntry, model || modelAlias);
   });
 
   server.listen(options.port, () => {
-    console.log(`MITM ready on :${options.port} -> ${options.routerUrl}`);
+    logProxyReady({ port: options.port, routerUrl: options.routerUrl });
   });
 
   server.on("error", (error) => {
     if (error.code === "EADDRINUSE") {
-      console.error(`Port ${options.port} already in use`);
+      logProxyError({ message: `port ${options.port} already in use` });
     } else if (error.code === "EACCES") {
-      console.error(`Permission denied for port ${options.port}`);
+      logProxyError({ message: `permission denied for port ${options.port}` });
     } else {
-      console.error(error.message);
+      logProxyError({ message: error.message });
     }
     process.exit(1);
   });

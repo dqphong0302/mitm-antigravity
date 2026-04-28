@@ -10,6 +10,8 @@ module.exports = {
   ...require("./logging"),
   ...require("./models"),
   ...require("./proxy"),
+  ...require("./proxy-logger"),
   ...require("./proxy-control"),
   ...require("./system"),
+  ...require("./wizard"),
 };

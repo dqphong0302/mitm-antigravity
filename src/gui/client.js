@@ -12,7 +12,8 @@ function guiClientScript() {
       logs: { backend: "", proxy: "" },
       theme: localStorage.getItem(STORAGE_THEME) || "system",
       lang: localStorage.getItem(STORAGE_LANG) || "en",
-      status: null
+      status: null,
+      doctor: null
     };
     const $ = (id) => document.getElementById(id);
 
@@ -52,6 +53,7 @@ function guiClientScript() {
       });
       if (state.config) renderMappings();
       if (state.status && !(options && options.skipStatus)) renderStatus(state.status);
+      if (state.doctor) renderDoctor(state.doctor);
       applyLogFilter();
     }
 
@@ -200,6 +202,18 @@ function guiClientScript() {
       el.className = "metric-value " + (cls || "neutral");
     }
 
+    function renderProxyToggle(status) {
+      const btn = $("proxyToggleBtn");
+      if (!btn) return;
+      const running = Boolean(status && status.proxyListening);
+      btn.textContent = running ? t("button.stopShort") : t("button.startShort");
+      btn.dataset.action = running ? "stop" : "start";
+      btn.classList.toggle("danger", running);
+      btn.classList.toggle("ready", !running);
+      btn.setAttribute("aria-label", running ? t("button.stop") : t("button.start"));
+      btn.title = running ? t("button.stop") : t("button.start");
+    }
+
     function renderStatus(status) {
       state.status = status;
       setMetric("s-proxy", status.proxyListening ? t("status.running") : t("status.stopped"), status.proxyListening ? "ok" : "err");
@@ -211,6 +225,7 @@ function guiClientScript() {
       setMetric("s-models", t("status.aliasCount", { count: status.mappedModels || 0 }), status.mappedModels > 0 ? "ok" : "warn");
       setMetric("s-router", status.routerUrl || "—", "neutral");
       setMetric("s-autostart", status.autoStart && status.autoStart.enabled ? t("status.enabled") : t("status.disabled"), status.autoStart && status.autoStart.enabled ? "ok" : "warn");
+      renderProxyToggle(status);
     }
 
     async function loadStatus() {
@@ -222,7 +237,7 @@ function guiClientScript() {
     }
 
     function setSystemButtons(disabled) {
-      ["startProxyBtn", "stopProxyBtn", "applyDnsBtn", "removeDnsBtn", "enableAutoStartBtn", "disableAutoStartBtn"].forEach((id) => {
+      ["proxyToggleBtn", "applyDnsBtn", "startProxyOnlyBtn", "stopCleanupBtn", "removeDnsBtn", "enableAutoStartBtn", "disableAutoStartBtn", "uninstallCertBtn", "runDoctorBtn"].forEach((id) => {
         if ($(id)) $(id).disabled = disabled;
       });
     }
@@ -308,6 +323,20 @@ function guiClientScript() {
       }
     }
 
+    async function startProxyOnly() {
+      setSystemButtons(true);
+      showStatus("systemStatus", t("message.startingProxyOnly"), "loading");
+      try {
+        const result = await api("/api/start-proxy-only", { method: "POST", body: JSON.stringify({}) });
+        showStatus("systemStatus", result.restarted ? t("message.proxyRestarted") : (result.alreadyRunning ? t("message.proxyAlreadyRunning") : t("message.proxyStarted")), "ok");
+        loadStatus();
+      } catch (error) {
+        showStatus("systemStatus", t("error.prefix", { message: error.message }), "err");
+      } finally {
+        setSystemButtons(false);
+      }
+    }
+
     async function stopProxy() {
       setSystemButtons(true);
       showStatus("systemStatus", t("message.stopping"), "loading");
@@ -320,6 +349,12 @@ function guiClientScript() {
       } finally {
         setSystemButtons(false);
       }
+    }
+
+    async function toggleProxy() {
+      const action = state.status && state.status.proxyListening ? "stop" : "start";
+      if (action === "stop") return stopProxy();
+      return startProxy();
     }
 
     async function applyDns() {
@@ -350,6 +385,65 @@ function guiClientScript() {
         loadStatus();
       } catch (error) {
         showStatus("systemStatus", t("error.prefix", { message: error.message }), "err");
+      } finally {
+        setSystemButtons(false);
+      }
+    }
+
+    async function stopAndCleanup() {
+      setSystemButtons(true);
+      showStatus("systemStatus", t("message.stopCleanup"), "loading");
+      try {
+        const result = await api("/api/stop-and-cleanup", { method: "POST", body: JSON.stringify({}) });
+        const stopText = result.stop && result.stop.stopped ? t("message.proxyStopped") : t("message.proxyWasNotRunning");
+        const dnsText = result.dns && result.dns.removed ? t("message.dnsRemoved") : t("message.dnsWasNotActive");
+        showStatus("systemStatus", t("message.stopCleanupDone", { stop: stopText, dns: dnsText }), "ok");
+        loadStatus();
+      } catch (error) {
+        showStatus("systemStatus", t("error.prefix", { message: error.message }), "err");
+      } finally {
+        setSystemButtons(false);
+      }
+    }
+
+    function renderDoctor(report) {
+      state.doctor = report;
+      const summaryKind = report.summary === "healthy" ? "ok" : (report.summary === "error" ? "err" : "warn");
+      const summaryText = report.summary === "healthy" ? t("doctor.healthy") : (report.summary === "error" ? t("doctor.error") : t("doctor.warning"));
+      showStatus("doctorSummary", summaryText, summaryKind);
+      $("doctorChecks").innerHTML = (report.checks || []).map((check) => {
+        const tagClass = check.severity === "ok" ? "ok" : (check.severity === "err" ? "danger" : "warn");
+        const label = t("doctor.check." + check.id) || check.label;
+        const value = check.ok ? t("doctor.pass") : t("doctor.attention");
+        return "<div class=\\"doctor-card\\"><div class=\\"doctor-card-title\\">" + esc(label) + "</div><span class=\\"tag " + tagClass + "\\">" + esc(value) + "</span></div>";
+      }).join("");
+      $("doctorRecommendations").innerHTML = (report.recommendations || []).map((item) => "<li>" + esc(item) + "</li>").join("");
+    }
+
+    async function runDoctor() {
+      setSystemButtons(true);
+      showStatus("doctorSummary", t("message.runningDoctor"), "loading");
+      try {
+        const report = await api("/api/doctor");
+        renderDoctor(report);
+        renderStatus(report.status);
+      } catch (error) {
+        showStatus("doctorSummary", t("error.prefix", { message: error.message }), "err");
+      } finally {
+        setSystemButtons(false);
+      }
+    }
+
+    async function uninstallCertUi() {
+      if (!window.confirm(t("confirm.uninstallCert"))) return;
+      setSystemButtons(true);
+      showStatus("teardownStatus", t("message.uninstallingCert"), "loading");
+      try {
+        const result = await api("/api/uninstall-cert", { method: "POST", body: JSON.stringify({}) });
+        showStatus("teardownStatus", result.cert && result.cert.removed ? t("message.certRemoved") : t("message.certWasNotInstalled"), "ok");
+        loadStatus();
+      } catch (error) {
+        showStatus("teardownStatus", t("error.prefix", { message: error.message }), "err");
       } finally {
         setSystemButtons(false);
       }
@@ -496,6 +590,7 @@ function guiClientScript() {
       });
       if (tab === "logs") loadLogs();
       if (tab === "dashboard") loadStatus();
+      if (tab === "doctor") runDoctor();
     }
 
     function bindEvents() {
@@ -523,10 +618,13 @@ function guiClientScript() {
       $("refreshLogsBtn").addEventListener("click", loadLogs);
       $("clearLogsBtn").addEventListener("click", clearLogsUi);
       $("logFilter").addEventListener("change", applyLogFilter);
-      $("startProxyBtn").addEventListener("click", startProxy);
-      $("stopProxyBtn").addEventListener("click", stopProxy);
+      $("proxyToggleBtn").addEventListener("click", toggleProxy);
       $("applyDnsBtn").addEventListener("click", applyDns);
+      $("startProxyOnlyBtn").addEventListener("click", startProxyOnly);
+      $("stopCleanupBtn").addEventListener("click", stopAndCleanup);
       $("removeDnsBtn").addEventListener("click", removeDns);
+      $("runDoctorBtn").addEventListener("click", runDoctor);
+      $("uninstallCertBtn").addEventListener("click", uninstallCertUi);
       $("enableAutoStartBtn").addEventListener("click", enableAutoStartUi);
       $("disableAutoStartBtn").addEventListener("click", disableAutoStartUi);
       $("eyeBtn").addEventListener("click", () => {

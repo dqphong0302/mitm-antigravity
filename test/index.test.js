@@ -83,6 +83,28 @@ test("addDNSEntries and removeDNSEntries work against an override hosts file", a
   assert.equal(afterRemove, "127.0.0.1 localhost\n");
 });
 
+test("removeDNSEntries restores hosts content around the managed DNS block", async () => {
+  const before = [
+    "127.0.0.1 localhost",
+    "# local development aliases",
+    "10.10.10.10 internal.example.test",
+    "",
+  ].join("\n");
+  fs.writeFileSync(hostsPath, before);
+
+  const targetHosts = [
+    "daily-cloudcode-pa.googleapis.com",
+    "cloudcode-pa.googleapis.com",
+  ];
+  await mitm.addDNSEntries({ targetHosts, remoteIp: "127.0.0.1" });
+  assert.notEqual(fs.readFileSync(hostsPath, "utf8"), before);
+
+  const removeResult = await mitm.removeDNSEntries({ targetHosts });
+
+  assert.equal(removeResult.removed, true);
+  assert.equal(fs.readFileSync(hostsPath, "utf8"), before);
+});
+
 test("model list includes built-in Antigravity aliases without explicit mappings", () => {
   const list = mitm.buildAntigravityModelList({ modelMap: {}, mockModelList: true });
   assert.ok(list.models["gemini-3-flash-agent"]);
@@ -252,6 +274,30 @@ test("logging helpers expose backend and proxy logs", () => {
   assert.match(logs.proxy, /proxy started/);
 });
 
+test("compact proxy logger redacts and shortens values", () => {
+  const compact = mitm.compactValue("Bearer sk-super-secret-token user@example.com ".repeat(8));
+
+  assert.ok(compact.length <= 140);
+  assert.match(compact, /Bearer \[redacted\]/);
+  assert.match(compact, /\[redacted-email\]/);
+  assert.doesNotMatch(compact, /sk-super-secret-token/);
+  assert.doesNotMatch(compact, /user@example\.com/);
+});
+
+test("compact proxy logger writes one-line messages", () => {
+  const originalLog = console.log;
+  const lines = [];
+  console.log = (line) => lines.push(line);
+  try {
+    mitm.logProxyMap({ sourceModel: "gemini-3-flash", targetModel: "ag/gemini-3-flash", reasoning: "low" });
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^\d{2}:\d{2}:\d{2} MAP gemini-3-flash -> ag\/gemini-3-flash reason=low$/);
+});
+
 test("macOS proxy LaunchDaemon plist uses launchd arguments instead of nohup", () => {
   const plist = mitm.macProxyLaunchDaemonPlist([
     "/usr/local/bin/node",
@@ -264,6 +310,28 @@ test("macOS proxy LaunchDaemon plist uses launchd arguments instead of nohup", (
   assert.match(plist, /<key>MITM_APP_DIR<\/key>/);
   assert.match(plist, /<string>\/tmp\/proxy.log<\/string>/);
   assert.doesNotMatch(plist, /nohup/);
+});
+
+test("CLI doctor reports stale DNS and cleanup guidance", () => {
+  const report = mitm.buildDoctorReport({
+    proxyListening: false,
+    dnsConfigured: true,
+    certExists: true,
+    certInstalled: true,
+    nodeTrustSupported: false,
+    routerUrl: "https://api.example.com/v1/chat/completions",
+  });
+
+  assert.equal(report.ok, false);
+  assert.match(report.recommendations.join("\n"), /mitm-antigravity stop/);
+});
+
+test("CLI cleanup aliases require sudo preflight on privileged systems", () => {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+
+  assert.equal(mitm.commandNeedsSudoPreflight("stop", { port: 443 }), true);
+  assert.equal(mitm.commandNeedsSudoPreflight("cleanup", { port: 443 }), true);
+  assert.equal(mitm.commandNeedsSudoPreflight("stop-cleanup", { port: 443 }), true);
 });
 
 test("config tab combines model loading and saving", () => {
@@ -280,6 +348,76 @@ test("config tab combines model loading and saving", () => {
   assert.match(html, /id="languageSelect"/);
   assert.match(html, /Tiếng Việt/);
   assert.match(html, /data-panel="dashboard"/);
+  assert.match(html, /id="proxyToggleBtn"/);
+  assert.doesNotMatch(html, /id="startProxyBtn"/);
+  assert.doesNotMatch(html, /id="stopProxyBtn"/);
+  assert.match(html, /button.startShort/);
+  assert.match(html, /data-tab="guide"/);
+  assert.match(html, /id="stopCleanupBtn"/);
+});
+
+test("GUI route table finds known routes and rejects unknown routes", () => {
+  const { createGuiRoutes, findGuiRoute } = require("../src/gui/routes");
+  const handlers = {
+    handleBootstrap() { },
+    handleLogs() { },
+    handleSaveConfig() { },
+    handleExportConfig() { },
+    handleImportConfig() { },
+    handleCheckKey() { },
+    handleStartProxy() { },
+    handleStopProxy() { },
+    handleStopAndCleanup() { },
+    handleReloadProxy() { },
+    handleApplyDns() { },
+    handleApplyAppTrust() { },
+    handleRemoveDns() { },
+    handleAutoStartStatus() { },
+    handleEnableAutoStart() { },
+    handleDisableAutoStart() { },
+    handleStatus() { },
+    handleClearLogs() { },
+  };
+
+  const routes = createGuiRoutes(handlers);
+
+  assert.equal(findGuiRoute(routes, "GET", "/api/bootstrap").handler, handlers.handleBootstrap);
+  assert.equal(findGuiRoute(routes, "POST", "/api/start-proxy").handler, handlers.handleStartProxy);
+  assert.equal(findGuiRoute(routes, "POST", "/api/stop-and-cleanup").handler, handlers.handleStopAndCleanup);
+  assert.equal(findGuiRoute(routes, "DELETE", "/api/bootstrap"), null);
+  assert.equal(findGuiRoute(routes, "GET", "/api/missing"), null);
+});
+
+test("wizard helpers merge answers without exposing secrets", () => {
+  const current = {
+    routerUrl: "http://old.local/v1/chat/completions",
+    apiKey: "sk-existing-secret",
+    model: "",
+    alwaysIntercept: false,
+    modelMap: { "gemini-3-flash": "old/model" },
+  };
+
+  const next = mitm.applyWizardAnswers(current, {
+    routerUrl: "https://new.local/v1/chat/completions",
+    apiKey: "sk-new-secret",
+    model: "",
+    alwaysIntercept: true,
+    modelMap: { "gemini-3-flash": "new/model" },
+  });
+
+  assert.equal(next.routerUrl, "https://new.local/v1/chat/completions");
+  assert.equal(next.apiKey, "sk-new-secret");
+  assert.equal(next.alwaysIntercept, true);
+  assert.equal(next.modelMap["gemini-3-flash"], "new/model");
+
+  const cleared = mitm.applyWizardAnswers(next, {
+    modelMap: { "gemini-3-flash": "" },
+  });
+  assert.equal(cleared.modelMap["gemini-3-flash"], undefined);
+
+  assert.equal(mitm.maskSecret("sk-new-secret"), "sk-new...cret");
+  assert.equal(mitm.yesNoDefault("", true), true);
+  assert.equal(mitm.yesNoDefault("n", true), false);
 });
 
 test("proxy can start on an unprivileged port and stopProxyByPort stops it", async (t) => {

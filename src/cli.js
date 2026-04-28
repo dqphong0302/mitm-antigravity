@@ -4,6 +4,7 @@ const {
   DEFAULT_REMOTE,
   DEFAULT_TARGET,
   DEFAULT_TARGET_HOSTS,
+  IS_MAC,
   IS_WIN,
 } = require("./constants");
 const { parseArgs } = require("./args");
@@ -43,12 +44,17 @@ const {
 } = require("./dns");
 const { checkProxyHealth, stopProxyByPort } = require("./proxy-control");
 const { runProxy } = require("./proxy");
+const { runWizard } = require("./wizard");
 
 function printHelp() {
   console.log(`
 Usage:
-  mitm-antigravity [start|setup|stop|status|gui|config|export-config|import-config|uninstall-cert] [options]
-  mitm-antigravity config [list|path|init|set key=value ...]
+  mitm-antigravity [start|setup|stop|cleanup|doctor|status|gui|wizard|config|export-config|import-config|uninstall-cert] [options]
+  mitm-antigravity wizard                                 Guided interactive setup
+  mitm-antigravity doctor                                 Diagnose proxy, DNS and certificate state
+  mitm-antigravity stop                                   Stop proxy and remove managed DNS entries
+  mitm-antigravity cleanup                                Alias for stop
+  mitm-antigravity config [list|path|paths|init|set key=value ...]
   mitm-antigravity export-config [--output file.json]     Export config as JSON
   mitm-antigravity import-config <file.json>              Import config from JSON
 
@@ -77,6 +83,12 @@ Options:
   --help              Show help
 
 Examples:
+  mitm-antigravity wizard
+  mitm-antigravity doctor
+  mitm-antigravity setup --password '<sudo-password>'
+  mitm-antigravity start --skip-setup
+  mitm-antigravity stop --password '<sudo-password>'
+  mitm-antigravity cleanup --password '<sudo-password>'
   mitm-antigravity config set routerUrl=https://api.example.com/v1/chat/completions apiKey=sk-...
   mitm-antigravity start --endpoint https://api.example.com/v1/chat/completions --model ag/gemini-3-flash
   mitm-antigravity start --map gemini-3-flash=ag/gemini-3-flash --map claude-sonnet-4-6=ag/claude-sonnet-4-6
@@ -85,7 +97,7 @@ Examples:
 
 function commandNeedsSudoPreflight(cmd, options) {
   if (IS_WIN || isRoot()) return false;
-  if (cmd === "setup" || cmd === "uninstall-cert") return true;
+  if (cmd === "setup" || cmd === "uninstall-cert" || cmd === "stop" || cmd === "cleanup" || cmd === "stop-cleanup") return true;
   if (cmd === "start") return !options.skipSetup || Number(options.port || 443) < 1024;
   return false;
 }
@@ -139,6 +151,82 @@ async function handleConfigCommand(args) {
   }
 
   throw new Error(`Unknown config command: ${action}`);
+}
+
+async function collectCliStatus(options) {
+  const { certPath } = certPaths();
+  const targetHosts = targetHostsFrom(options);
+  const certEx = certExists();
+  const nodeTrust = certEx ? await checkAntigravityNodeTrust(certPath) : { supported: IS_MAC, applied: false, value: "" };
+  const proxyListening = await checkProxyHealth(Number(options.port || 443), targetHosts[0]);
+  return {
+    running: proxyListening,
+    proxyListening,
+    dnsConfigured: dnsConfiguredForHosts(targetHosts, options.remoteIp || DEFAULT_REMOTE),
+    certExists: certEx,
+    certInstalled: certEx ? await checkCertInstalled(certPath, targetHosts[0]) : false,
+    nodeTrustSupported: nodeTrust.supported,
+    nodeTrustApplied: nodeTrust.applied,
+    nodeTrustValue: nodeTrust.value,
+    redirectIp: Object.fromEntries(targetHosts.map((host) => [host, getRedirectIPs(host)])),
+    settingsPath: settingsPath(),
+    bundledSettingsPath: bundledSettingsPath(),
+    legacyConfigPath: configPath(),
+    machine: machineId(),
+    targetHosts,
+    routerUrl: options.routerUrl,
+    model: options.model || null,
+    mappedModels: Object.keys(options.modelMap || {}).length,
+  };
+}
+
+function buildDoctorReport(status) {
+  const checks = [
+    {
+      name: "Proxy listener",
+      ok: Boolean(status.proxyListening),
+      fix: "Run `mitm-antigravity start --skip-setup` after setup.",
+    },
+    {
+      name: "DNS redirect",
+      ok: Boolean(status.dnsConfigured),
+      fix: "Run `mitm-antigravity setup` to apply DNS, or `mitm-antigravity stop` to remove stale DNS.",
+    },
+    {
+      name: "Certificate generated",
+      ok: Boolean(status.certExists),
+      fix: "Run `mitm-antigravity setup` to generate the local certificate.",
+    },
+    {
+      name: "Certificate trusted",
+      ok: Boolean(status.certInstalled),
+      fix: "Run `mitm-antigravity setup` with administrator/sudo permission.",
+    },
+  ];
+  if (status.nodeTrustSupported) {
+    checks.push({
+      name: "Antigravity Node trust",
+      ok: Boolean(status.nodeTrustApplied),
+      fix: "Restart Antigravity after setup so it picks up the certificate trust environment.",
+    });
+  }
+  const staleDns = status.dnsConfigured && !status.proxyListening;
+  const recommendations = [];
+  if (staleDns) recommendations.push("DNS redirect is active while proxy is stopped. Run `mitm-antigravity stop` to restore normal Antigravity networking.");
+  if (!status.dnsConfigured && status.proxyListening) recommendations.push("Proxy is running without DNS redirect. Run `mitm-antigravity setup` if Antigravity traffic should use the proxy.");
+  if (!status.routerUrl) recommendations.push("No upstream endpoint configured. Run `mitm-antigravity wizard` or `mitm-antigravity config set routerUrl=...`.");
+  return {
+    ok: checks.every((check) => check.ok) && recommendations.length === 0,
+    checks,
+    recommendations,
+    status,
+  };
+}
+
+async function runCleanup(options) {
+  const proxy = await stopProxyByPort({ port: options.port, targetHost: primaryTargetHost(options), sudoPassword: options.sudoPassword });
+  const dns = await removeDNSEntries({ targetHosts: targetHostsFrom(options), sudoPassword: options.sudoPassword });
+  return { proxy, dns };
 }
 
 async function main() {
@@ -228,6 +316,12 @@ async function main() {
     return;
   }
 
+  if (cmd === "wizard" || cmd === "setup-wizard") {
+    const result = await runWizard();
+    if (result.openGui) await runGui({ ...options, ...result.config });
+    return;
+  }
+
   if (commandNeedsSudoPreflight(cmd, options)) {
     if (!options.sudoPassword) {
       console.error("Missing sudo password. Re-run with --password or MITM_SUDO_PASSWORD, or run with sudo.");
@@ -237,31 +331,12 @@ async function main() {
   }
 
   if (cmd === "status") {
-    const { certPath } = certPaths();
-    const targetHosts = targetHostsFrom(options);
-    const certEx = certExists();
-    const nodeTrust = certEx ? await checkAntigravityNodeTrust(certPath) : { supported: IS_MAC, applied: false, value: "" };
-    const proxyListening = await checkProxyHealth(Number(options.port || 443), targetHosts[0]);
-    const status = {
-      running: proxyListening,
-      proxyListening,
-      dnsConfigured: dnsConfiguredForHosts(targetHosts, options.remoteIp || DEFAULT_REMOTE),
-      certExists: certEx,
-      certInstalled: certEx ? await checkCertInstalled(certPath, targetHosts[0]) : false,
-      nodeTrustSupported: nodeTrust.supported,
-      nodeTrustApplied: nodeTrust.applied,
-      nodeTrustValue: nodeTrust.value,
-      redirectIp: Object.fromEntries(targetHosts.map((host) => [host, getRedirectIPs(host)])),
-      settingsPath: settingsPath(),
-      bundledSettingsPath: bundledSettingsPath(),
-      legacyConfigPath: configPath(),
-      machine: machineId(),
-      targetHosts,
-      routerUrl: options.routerUrl,
-      model: options.model || null,
-      mappedModels: Object.keys(options.modelMap || {}).length,
-    };
-    console.log(JSON.stringify(status, null, 2));
+    console.log(JSON.stringify(await collectCliStatus(options), null, 2));
+    return;
+  }
+
+  if (cmd === "doctor") {
+    console.log(JSON.stringify(buildDoctorReport(await collectCliStatus(options)), null, 2));
     return;
   }
 
@@ -272,10 +347,8 @@ async function main() {
     return;
   }
 
-  if (cmd === "stop") {
-    const proxy = await stopProxyByPort({ port: options.port, targetHost: primaryTargetHost(options), sudoPassword: options.sudoPassword });
-    const dns = await removeDNSEntries({ targetHosts: targetHostsFrom(options), sudoPassword: options.sudoPassword });
-    console.log(JSON.stringify({ proxy, dns }, null, 2));
+  if (cmd === "stop" || cmd === "cleanup" || cmd === "stop-cleanup") {
+    console.log(JSON.stringify(await runCleanup(options), null, 2));
     return;
   }
 
@@ -321,8 +394,11 @@ async function main() {
 }
 
 module.exports = {
+  buildDoctorReport,
+  collectCliStatus,
   commandNeedsSudoPreflight,
   handleConfigCommand,
   main,
   printHelp,
+  runCleanup,
 };

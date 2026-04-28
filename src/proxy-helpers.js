@@ -1,4 +1,5 @@
 const { redactText } = require("./logging");
+const { logProxyError, logProxyRetry } = require("./proxy-logger");
 const { decodeResponseBody } = require("./model-serialization");
 
 const ROUTER_STRIP_HEADERS = new Set([
@@ -95,16 +96,19 @@ function passthroughLogLabel(reqUrl) {
     return "PASS";
 }
 
-function logPassthroughResponse({ req, statusCode, targetHost, requestPath, raw, headers, extra = "" }) {
-    const label = passthroughLogLabel(req.url);
-    const suffix = extra ? ` ${extra}` : "";
-    const base = `${label} ${statusCode} ${req.method} ${targetHost}${requestPath}${suffix}`;
+function logPassthroughResponse({ req, statusCode, targetHost, requestPath, raw, headers }) {
     if (statusCode >= 400) {
-        console.error(`${base} errorBody=${responseBodySnippetForLog(raw, headers) || "-"}`);
-    } else {
-        console.log(base);
+        logProxyError({
+            message: "passthrough failed",
+            statusCode,
+            method: req.method,
+            targetHost,
+            requestPath,
+            body: responseBodySnippetForLog(raw, headers) || "-",
+        });
     }
 }
+
 
 async function retryWithBackoff(fetchFn, options) {
     const maxRetries = Number(options.maxRetries || 0);
@@ -121,7 +125,12 @@ async function retryWithBackoff(fetchFn, options) {
             if (!response.ok && (response.status === 503 || response.status === 502 || response.status === 504)) {
                 if (attempt < maxRetries) {
                     const waitMs = retryDelay * Math.pow(retryBackoff, attempt);
-                    console.log(`Retry ${attempt + 1}/${maxRetries} after HTTP ${response.status} (waiting ${(waitMs / 1000).toFixed(1)}s)...`);
+                    logProxyRetry({
+                        attempt: attempt + 1,
+                        maxRetries,
+                        status: response.status,
+                        waitMs,
+                    });
                     await new Promise(resolve => setTimeout(resolve, waitMs));
                     continue;
                 }
@@ -132,7 +141,12 @@ async function retryWithBackoff(fetchFn, options) {
             lastError = error;
             if (attempt < maxRetries) {
                 const waitMs = retryDelay * Math.pow(retryBackoff, attempt);
-                console.log(`Retry ${attempt + 1}/${maxRetries} after error (waiting ${(waitMs / 1000).toFixed(1)}s)...`);
+                logProxyRetry({
+                    attempt: attempt + 1,
+                    maxRetries,
+                    message: error.message,
+                    waitMs,
+                });
                 await new Promise(resolve => setTimeout(resolve, waitMs));
             }
         }

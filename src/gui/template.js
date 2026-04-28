@@ -24,7 +24,7 @@ function guiHtml() {
   <div class="app-shell">
     <header class="topbar">
       <div class="brand">
-        <div class="brand-mark">AG</div>
+        <div class="brand-mark" aria-hidden="true">A</div>
         <div>
           <h1 data-i18n="app.title">MITM Antigravity</h1>
           <p data-i18n="app.subtitle">Local proxy control</p>
@@ -51,6 +51,8 @@ function guiHtml() {
     <div class="layout">
       <nav class="tabs" aria-label="Main sections">
         <button class="tab-btn active" data-tab="dashboard" type="button" data-i18n="nav.dashboard">Dashboard</button>
+        <button class="tab-btn" data-tab="doctor" type="button" data-i18n="nav.doctor">Doctor</button>
+        <button class="tab-btn" data-tab="guide" type="button" data-i18n="nav.guide">Guide</button>
         <button class="tab-btn" data-tab="config" type="button" data-i18n="nav.config">Config</button>
         <button class="tab-btn" data-tab="mapping" type="button" data-i18n="nav.mapping">Model Mapping</button>
         <button class="tab-btn" data-tab="logs" type="button" data-i18n="nav.logs">Logs</button>
@@ -68,9 +70,8 @@ function guiHtml() {
                 </div>
                 <button class="secondary" id="refreshStatusBtn" type="button" data-i18n="button.refresh">Refresh</button>
               </div>
-              <div class="command-stack">
-                <button id="startProxyBtn" type="button" data-i18n="button.start">Start Proxy & Trust</button>
-                <button class="danger" id="stopProxyBtn" type="button" data-i18n="button.stop">Stop Proxy</button>
+              <div class="command-stack single">
+                <button id="proxyToggleBtn" type="button" data-i18n="button.startShort">START</button>
               </div>
               <div id="systemStatus" class="status"></div>
             </section>
@@ -94,9 +95,57 @@ function guiHtml() {
             </div>
             <div class="system-grid">
               <button id="applyDnsBtn" type="button" data-i18n="button.applyDns">Apply DNS & Cert</button>
+              <button class="secondary" id="startProxyOnlyBtn" type="button" data-i18n="button.startProxyOnly">Start Proxy Only</button>
+              <button class="danger" id="stopCleanupBtn" type="button" data-i18n="button.stopCleanup">Stop & Remove DNS</button>
               <button class="secondary" id="removeDnsBtn" type="button" data-i18n="button.removeDns">Remove DNS</button>
               <button class="secondary" id="enableAutoStartBtn" type="button" data-i18n="button.enableAutoStart">Enable Auto Start</button>
               <button class="secondary" id="disableAutoStartBtn" type="button" data-i18n="button.disableAutoStart">Disable Auto Start</button>
+            </div>
+          </section>
+        </section>
+
+        <section class="tab-panel" data-panel="doctor">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title" data-i18n="doctor.title">Doctor Diagnostics</h2>
+                <p class="panel-subtitle" data-i18n="doctor.subtitle">Run a CLI-equivalent health check for proxy, DNS, certificate, Antigravity trust, endpoint, and model mapping.</p>
+              </div>
+              <button class="secondary" id="runDoctorBtn" type="button" data-i18n="button.runDoctor">Run Doctor</button>
+            </div>
+            <div id="doctorSummary" class="status"></div>
+            <div class="doctor-grid" id="doctorChecks"></div>
+            <div class="recommendation-box">
+              <div class="log-title" data-i18n="doctor.recommendations">Recommendations</div>
+              <ul id="doctorRecommendations"></ul>
+            </div>
+          </section>
+        </section>
+
+        <section class="tab-panel" data-panel="guide">
+          <section class="panel guide-hero">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title" data-i18n="guide.title">How to use safely</h2>
+                <p class="panel-subtitle" data-i18n="guide.subtitle">MITM Antigravity has two runtime steps: run the local proxy and redirect Antigravity traffic to it.</p>
+              </div>
+            </div>
+            <div class="guide-grid">
+              <article class="guide-card">
+                <div class="step-badge">1</div>
+                <h3 data-i18n="guide.step1Title">Initialize proxy service</h3>
+                <p data-i18n="guide.step1Body">Start the local HTTPS proxy. It listens on your machine and forwards mapped AI requests to your configured upstream endpoint.</p>
+              </article>
+              <article class="guide-card">
+                <div class="step-badge">2</div>
+                <h3 data-i18n="guide.step2Title">Redirect DNS to proxy</h3>
+                <p data-i18n="guide.step2Body">Apply DNS and certificate trust so Antigravity traffic reaches the local proxy instead of going directly to Google.</p>
+              </article>
+              <article class="guide-card cleanup">
+                <div class="step-badge">↩</div>
+                <h3 data-i18n="guide.cleanupTitle">When you stop using it</h3>
+                <p data-i18n="guide.cleanupBody">Reverse both setup steps: stop the proxy and remove DNS redirect. Use Stop & Remove DNS to return Antigravity to normal operation.</p>
+              </article>
             </div>
           </section>
         </section>
@@ -218,6 +267,18 @@ function guiHtml() {
               <input type="file" id="importConfigFile" accept=".json,application/json" style="display:none;">
             </div>
             <div id="importExportStatus" class="status"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title" data-i18n="settings.teardown">Advanced Teardown</h2>
+                <p class="panel-subtitle" data-i18n="settings.teardownDesc">Use this only when you want to remove the trusted MITM certificate from the system keychain/store.</p>
+              </div>
+            </div>
+            <div class="system-grid" style="margin-top:12px;">
+              <button class="danger" id="uninstallCertBtn" type="button" data-i18n="button.uninstallCert">Uninstall Certificate</button>
+            </div>
+            <div id="teardownStatus" class="status"></div>
           </section>
         </section>
       </main>
