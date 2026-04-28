@@ -26,6 +26,7 @@ const {
 } = require("./proxy-helpers");
 const {
   logProxyError,
+  logProxyPass,
   logProxyReady,
 } = require("./proxy-logger");
 
@@ -103,6 +104,18 @@ async function runProxy(options) {
             res.end(raw);
           });
           return;
+        }
+
+        if (isChatRequestUrl(req.url)) {
+          const model = extractModelFromBody(bodyBuffer) || extractModelFromUrl(req.url) || "unknown";
+          logProxyPass({
+            label: "CHAT PASS",
+            statusCode: forwardRes.statusCode,
+            method: req.method,
+            targetHost,
+            requestPath,
+            extra: `model=${model}`,
+          });
         }
 
         res.writeHead(forwardRes.statusCode, forwardRes.headers);
