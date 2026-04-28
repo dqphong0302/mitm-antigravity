@@ -52,11 +52,11 @@ function guiHtml() {
       <nav class="tabs" aria-label="Main sections">
         <button class="tab-btn active" data-tab="dashboard" type="button" data-i18n="nav.dashboard">Dashboard</button>
         <button class="tab-btn" data-tab="doctor" type="button" data-i18n="nav.doctor">Doctor</button>
-        <button class="tab-btn" data-tab="guide" type="button" data-i18n="nav.guide">Guide</button>
-        <button class="tab-btn" data-tab="config" type="button" data-i18n="nav.config">Config</button>
+        <button class="tab-btn" data-tab="config" type="button" data-i18n="nav.config">Endpoint API</button>
         <button class="tab-btn" data-tab="mapping" type="button" data-i18n="nav.mapping">Model Mapping</button>
         <button class="tab-btn" data-tab="logs" type="button" data-i18n="nav.logs">Logs</button>
         <button class="tab-btn" data-tab="settings" type="button" data-i18n="nav.settings">Settings</button>
+        <button class="tab-btn" data-tab="guide" type="button" data-i18n="nav.guide">Guide</button>
       </nav>
 
       <main>
@@ -83,7 +83,7 @@ function guiHtml() {
               <div class="metric"><div class="metric-label" data-i18n="metric.cert">Certificate</div><div class="metric-value neutral" id="s-cert">—</div></div>
               <div class="metric"><div class="metric-label" data-i18n="metric.trust">Cert Trusted</div><div class="metric-value neutral" id="s-trust">—</div></div>
               <div class="metric"><div class="metric-label" data-i18n="metric.nodeTrust">Antigravity Trust</div><div class="metric-value neutral" id="s-node-trust">—</div></div>
-              <div class="metric"><div class="metric-label" data-i18n="metric.redirectIp">Redirect IP</div><div class="metric-value neutral" id="s-ip">—</div></div>
+
               <div class="metric"><div class="metric-label" data-i18n="metric.models">Mapped Models</div><div class="metric-value neutral" id="s-models">—</div></div>
               <div class="metric"><div class="metric-label" data-i18n="metric.autostart">Auto Start</div><div class="metric-value neutral" id="s-autostart">—</div></div>
             </section>

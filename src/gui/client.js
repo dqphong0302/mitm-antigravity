@@ -221,8 +221,7 @@ function guiClientScript() {
       setMetric("s-cert", status.certExists ? t("status.generated") : t("status.missing"), status.certExists ? "ok" : "err");
       setMetric("s-trust", status.certInstalled ? t("status.trusted") : t("status.notTrusted"), status.certInstalled ? "ok" : "warn");
       setMetric("s-node-trust", status.nodeTrustApplied ? t("status.active") : (status.nodeTrustSupported ? t("status.missing") : t("status.notApplicable")), status.nodeTrustApplied ? "ok" : (status.nodeTrustSupported ? "warn" : "neutral"));
-      setMetric("s-ip", status.redirectIp || "—", status.redirectIp ? "ok" : "neutral");
-      setMetric("s-models", t("status.aliasCount", { count: status.mappedModels || 0 }), status.mappedModels > 0 ? "ok" : "warn");
+      setMetric("s-models", status.mappedModels > 0 ? t("status.aliasCount", { count: status.mappedModels }) : "—", status.mappedModels > 0 ? "ok" : "neutral");
       setMetric("s-router", status.routerUrl || "—", "neutral");
       setMetric("s-autostart", status.autoStart && status.autoStart.enabled ? t("status.enabled") : t("status.disabled"), status.autoStart && status.autoStart.enabled ? "ok" : "warn");
       renderProxyToggle(status);

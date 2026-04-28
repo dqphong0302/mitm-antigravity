@@ -150,12 +150,14 @@ function guiStyles() {
     .layout { width: min(1180px, calc(100vw - 28px)); margin: 14px auto 36px; }
     .tabs {
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
-      gap: 8px;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 6px;
       margin-bottom: 16px;
     }
     .tab-btn {
-      min-height: 42px;
+      min-height: 40px;
+      font-size: 13px;
+      padding: 6px 4px;
       color: var(--muted);
       background: var(--surface);
       border-color: var(--border);
