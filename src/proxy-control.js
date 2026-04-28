@@ -7,6 +7,11 @@ const { DEFAULT_TARGET, IS_MAC, IS_WIN } = require("./constants");
 const { appDir, runtimeDir } = require("./config");
 const { appendLog, proxyLogPath } = require("./logging");
 const { execPowerShell, execPromise, execWithSudo, shellQuote } = require("./system");
+
+function normalizeProcessName(value) {
+  const text = String(value || "").trim();
+  return text || "unknown";
+}
 const {
   bootstrapMacProxyLaunchDaemon,
   bootoutMacProxyLaunchDaemon,
@@ -22,6 +27,7 @@ const {
   autoStartPath,
   autoStartShellCommand,
   autoStartStatus,
+  cliWorkingDirectory,
   disableAutoStart,
   enableAutoStart,
   isAutoStartEnabled,
@@ -45,6 +51,46 @@ async function isPortListening(port) {
   } catch {
     return false;
   }
+}
+
+async function getPortOwners(port) {
+  const pids = IS_WIN ? await pidsListeningOnPortWindows(port) : await pidsListeningOnPortUnix(port);
+  if (pids.length === 0) return [];
+  if (IS_WIN) return processDetailsWindows(pids);
+  return processDetailsUnix(pids);
+}
+
+async function processDetailsUnix(pids) {
+  if (pids.length === 0) return [];
+  try {
+    const stdout = await execPromise(`ps -o pid= -o comm= -p ${pids.map((pid) => shellQuote(pid)).join(",")}`);
+    const byPid = new Map();
+    for (const line of stdout.split(/\r?\n/)) {
+      const match = line.trim().match(/^(\d+)\s+(.+)$/);
+      if (match) byPid.set(match[1], normalizeProcessName(match[2]));
+    }
+    return pids.map((pid) => ({ pid, name: byPid.get(pid) || "unknown" }));
+  } catch {
+    return pids.map((pid) => ({ pid, name: "unknown" }));
+  }
+}
+
+async function processDetailsWindows(pids) {
+  if (pids.length === 0) return [];
+  try {
+    const ids = pids.map((pid) => Number(pid)).filter(Number.isFinite).join(",");
+    const stdout = await execPowerShell(`Get-Process -Id ${ids} -ErrorAction SilentlyContinue | Select-Object Id,ProcessName | ConvertTo-Json -Compress`);
+    const parsed = stdout.trim() ? JSON.parse(stdout) : [];
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    const byPid = new Map(rows.map((row) => [String(row.Id), normalizeProcessName(row.ProcessName)]));
+    return pids.map((pid) => ({ pid, name: byPid.get(pid) || "unknown" }));
+  } catch {
+    return pids.map((pid) => ({ pid, name: "unknown" }));
+  }
+}
+
+function formatPortOwners(owners) {
+  return (owners || []).map((owner) => `${owner.name || "unknown"}#${owner.pid}`).join(", ");
 }
 
 function checkProxyHealth(port, targetHost = DEFAULT_TARGET) {
@@ -91,7 +137,9 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
   }
 
   if (await isPortListening(port)) {
-    throw new Error(`Port ${port} is already in use by another service`);
+    const owners = await getPortOwners(port);
+    const ownerText = formatPortOwners(owners) || "unknown process";
+    throw new Error(`Port ${port} is already in use by ${ownerText}`);
   }
 
   const logPath = proxyLogPath();
@@ -190,17 +238,22 @@ module.exports = {
   autoStartPath,
   autoStartShellCommand,
   autoStartStatus,
+  cliWorkingDirectory,
   checkProxyHealth,
   disableAutoStart,
   enableAutoStart,
   macProxyLaunchDaemonLabel,
   macProxyLaunchDaemonPath,
   macProxyLaunchDaemonPlist,
+  formatPortOwners,
+  getPortOwners,
   isAutoStartEnabled,
   isPortListening,
   parsePidsFromOutput,
   pidsListeningOnPortUnix,
   pidsListeningOnPortWindows,
+  processDetailsUnix,
+  processDetailsWindows,
   startProxyDetached,
   stopProxyByPort,
   waitForProxyHealth,

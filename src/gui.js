@@ -42,6 +42,8 @@ const {
   checkProxyHealth,
   disableAutoStart,
   enableAutoStart,
+  formatPortOwners,
+  getPortOwners,
   startProxyDetached,
   stopProxyByPort,
 } = require("./proxy-control");
@@ -119,12 +121,26 @@ async function handleCheckKey(req, res) {
   const routerUrl = String(body.routerUrl || readConfig().routerUrl || "").trim();
   const apiKey = String(body.apiKey || "");
   if (!routerUrl) throw new Error("Missing endpoint");
-  const result = await fetchAvailableModels(routerUrl, apiKey);
-  if (result.models && result.models.length > 0) {
-    const cfg = readConfig();
-    writeConfig({ ...cfg, cachedModels: result.models });
+  try {
+    const result = await fetchAvailableModels(routerUrl, apiKey);
+    if (result.models && result.models.length > 0) {
+      const cfg = readConfig();
+      writeConfig({ ...cfg, cachedModels: result.models });
+    }
+    sendJson(res, 200, result);
+  } catch (error) {
+    if (error.category || error.hint || error.modelsUrl || error.status) {
+      sendJson(res, 502, {
+        error: error.message,
+        category: error.category || "model_check_failed",
+        hint: error.hint || "Check the router URL and provider configuration.",
+        modelsUrl: error.modelsUrl || "",
+        status: error.status || 0,
+      });
+      return;
+    }
+    throw error;
   }
-  sendJson(res, 200, result);
 }
 
 async function handleStartProxy(req, res, options) {
@@ -283,6 +299,7 @@ async function collectGuiStatus(options) {
   const expectedIp = cfg.remoteIp || options.remoteIp || DEFAULT_REMOTE;
   const nodeTrust = certEx ? await checkAntigravityNodeTrust(certPath) : { supported: IS_MAC, applied: false, value: "" };
   const proxyListening = await checkProxyHealth(Number(cfg.port || options.port || 443), targetHosts[0]);
+  const portOwners = await getPortOwners(Number(cfg.port || options.port || 443));
   return {
     proxyListening,
     dnsConfigured: dnsConfiguredForHosts(targetHosts, expectedIp),
@@ -296,6 +313,9 @@ async function collectGuiStatus(options) {
     mappedModels: Object.keys(cfg.modelMap || {}).length,
     machine: machineId(),
     autoStart: await autoStartStatus(),
+    port: Number(cfg.port || options.port || 443),
+    portOwners,
+    portOwnerText: formatPortOwners(portOwners),
   };
 }
 
@@ -308,6 +328,7 @@ function buildDoctorReport(status) {
     { id: "nodeTrust", label: "Antigravity Node Trust", ok: status.nodeTrustSupported ? status.nodeTrustApplied : true, severity: status.nodeTrustSupported && !status.nodeTrustApplied ? "warn" : "ok" },
     { id: "router", label: "Router URL", ok: Boolean(status.routerUrl), severity: status.routerUrl ? "ok" : "err" },
     { id: "mapping", label: "Model Mapping", ok: status.mappedModels > 0, severity: status.mappedModels > 0 ? "ok" : "warn" },
+    { id: "portOwner", label: "Port Owner", ok: !status.portOwnerText || status.proxyListening, severity: status.portOwnerText && !status.proxyListening ? "err" : "ok" },
   ];
   const recommendations = [];
   if (status.dnsConfigured && !status.proxyListening) recommendations.push("DNS redirect is active while the proxy is stopped. Use Stop & Remove DNS before leaving the tool.");
@@ -317,6 +338,7 @@ function buildDoctorReport(status) {
   if (status.nodeTrustSupported && !status.nodeTrustApplied) recommendations.push("Antigravity Node trust is missing. Use Apply DNS & Cert, then restart Antigravity.");
   if (!status.routerUrl) recommendations.push("Router URL is empty. Configure endpoint and authentication first.");
   if (status.mappedModels === 0) recommendations.push("No built-in models are mapped. Add model mappings or enable passthrough intentionally.");
+  if (status.portOwnerText && !status.proxyListening) recommendations.push(`Port ${status.port || 443} is occupied by ${status.portOwnerText}. Stop that process before starting MITM Antigravity.`);
   if (recommendations.length === 0) recommendations.push("Everything looks healthy.");
   const hasError = checks.some((check) => check.severity === "err");
   const hasWarn = checks.some((check) => check.severity === "warn");
@@ -396,7 +418,7 @@ async function handleImportConfig(req, res) {
   sendJson(res, 200, { config: imported });
 }
 
-async function runGui(options) {
+async function startGuiServer(options = {}) {
   const uiPort = Number(options.uiPort || 20245);
   const server = http.createServer(async (req, res) => {
     try {
@@ -414,6 +436,13 @@ async function runGui(options) {
   const url = `http://127.0.0.1:${uiPort}/`;
   console.log(`GUI ready at ${url}`);
   appendLog("info", "GUI backend ready", { url });
+
+  return { server, url, port: uiPort };
+}
+
+async function runGui(options) {
+  const { server, url } = await startGuiServer(options);
+
   if (!options.noOpen) {
     try {
       openBrowser(url);
@@ -430,4 +459,5 @@ module.exports = {
   guiHtml,
   guiPresets,
   runGui,
+  startGuiServer,
 };

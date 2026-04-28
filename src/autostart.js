@@ -27,6 +27,26 @@ function proxyStartShellCommand(extraArgs = []) {
     return proxyStartCommandParts(extraArgs).map((part) => shellQuote(part)).join(" ");
 }
 
+function cliWorkingDirectory(dir = runtimeDir()) {
+    if (dir.endsWith(".asar")) return path.dirname(dir);
+    return dir;
+}
+
+function cliEnvironment(extra = {}) {
+    const env = {
+        HOME: os.homedir(),
+        MITM_APP_DIR: appDir(),
+        PATH: "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    };
+    return { ...env, ...extra };
+}
+
+function plistEnvironmentXml(env) {
+    return Object.entries(env)
+        .map(([key, value]) => `    <key>${xmlEscape(key)}</key>\n    <string>${xmlEscape(value)}</string>`)
+        .join("\n");
+}
+
 function macProxyLaunchDaemonLabel() {
     return "com.phongdang.mitm-antigravity.proxy";
 }
@@ -35,18 +55,10 @@ function macProxyLaunchDaemonPath() {
     return `/Library/LaunchDaemons/${macProxyLaunchDaemonLabel()}.plist`;
 }
 
-function macProxyLaunchDaemonPlist(commandParts, logPath) {
+function macProxyLaunchDaemonPlist(commandParts, logPath, env = cliEnvironment({ MITM_PROXY_LOG: logPath })) {
     const argsXml = commandParts.map((part) => `    <string>${xmlEscape(part)}</string>`).join("\n");
-    const env = {
-        HOME: os.homedir(),
-        MITM_APP_DIR: appDir(),
-        MITM_PROXY_LOG: logPath,
-        PATH: "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-    };
-    const envXml = Object.entries(env)
-        .map(([key, value]) => `    <key>${xmlEscape(key)}</key>\n    <string>${xmlEscape(value)}</string>`)
-        .join("\n");
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xmlEscape(macProxyLaunchDaemonLabel())}</string>\n  <key>ProgramArguments</key>\n  <array>\n${argsXml}\n  </array>\n  <key>WorkingDirectory</key>\n  <string>${xmlEscape(runtimeDir())}</string>\n  <key>EnvironmentVariables</key>\n  <dict>\n${envXml}\n  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>StandardOutPath</key>\n  <string>${xmlEscape(logPath)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xmlEscape(logPath)}</string>\n</dict>\n</plist>\n`;
+    const envXml = plistEnvironmentXml(env);
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xmlEscape(macProxyLaunchDaemonLabel())}</string>\n  <key>ProgramArguments</key>\n  <array>\n${argsXml}\n  </array>\n  <key>WorkingDirectory</key>\n  <string>${xmlEscape(cliWorkingDirectory())}</string>\n  <key>EnvironmentVariables</key>\n  <dict>\n${envXml}\n  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>StandardOutPath</key>\n  <string>${xmlEscape(logPath)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xmlEscape(logPath)}</string>\n</dict>\n</plist>\n`;
 }
 
 async function bootoutMacProxyLaunchDaemon(sudoPassword) {
@@ -129,7 +141,8 @@ async function enableAutoStart() {
         const plistPath = autoStartPath();
         fs.mkdirSync(path.dirname(plistPath), { recursive: true });
         const argsXml = commandParts.map((part) => `    <string>${xmlEscape(part)}</string>`).join("\n");
-        const plist = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xmlEscape(autoStartLabel())}</string>\n  <key>ProgramArguments</key>\n  <array>\n${argsXml}\n  </array>\n  <key>WorkingDirectory</key>\n  <string>${xmlEscape(runtimeDir())}</string>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>StandardOutPath</key>\n  <string>${xmlEscape(path.join(appDir(), "autostart.log"))}</string>\n  <key>StandardErrorPath</key>\n  <string>${xmlEscape(path.join(appDir(), "autostart.err.log"))}</string>\n</dict>\n</plist>\n`;
+        const envXml = plistEnvironmentXml(cliEnvironment());
+        const plist = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xmlEscape(autoStartLabel())}</string>\n  <key>ProgramArguments</key>\n  <array>\n${argsXml}\n  </array>\n  <key>WorkingDirectory</key>\n  <string>${xmlEscape(cliWorkingDirectory())}</string>\n  <key>EnvironmentVariables</key>\n  <dict>\n${envXml}\n  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>StandardOutPath</key>\n  <string>${xmlEscape(path.join(appDir(), "autostart.log"))}</string>\n  <key>StandardErrorPath</key>\n  <string>${xmlEscape(path.join(appDir(), "autostart.err.log"))}</string>\n</dict>\n</plist>\n`;
         fs.writeFileSync(plistPath, plist);
         await execPromise(`launchctl unload ${shellQuote(plistPath)} >/dev/null 2>&1 || true`);
         await execPromise(`launchctl load ${shellQuote(plistPath)}`);
@@ -144,7 +157,7 @@ async function enableAutoStart() {
     }
 
     const servicePath = autoStartPath();
-    const service = `[Unit]\nDescription=MITM Antigravity Proxy\nAfter=network-online.target\n\n[Service]\nType=simple\nWorkingDirectory=${runtimeDir()}\nExecStart=${autoStartShellCommand()}\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`;
+    const service = `[Unit]\nDescription=MITM Antigravity Proxy\nAfter=network-online.target\n\n[Service]\nType=simple\nWorkingDirectory=${cliWorkingDirectory()}\nExecStart=${autoStartShellCommand()}\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`;
     fs.writeFileSync(servicePath, service);
     await execPromise(`mkdir -p ${shellQuote(path.join(os.homedir(), ".config", "systemd", "user"))} && cp ${shellQuote(servicePath)} ${shellQuote(path.join(os.homedir(), ".config", "systemd", "user", "mitm-antigravity.service"))} && systemctl --user daemon-reload && systemctl --user enable mitm-antigravity.service`);
     return { enabled: true, method: "Linux user systemd", path: servicePath };
@@ -179,6 +192,8 @@ module.exports = {
     autoStartStatus,
     bootoutMacProxyLaunchDaemon,
     bootstrapMacProxyLaunchDaemon,
+    cliEnvironment,
+    cliWorkingDirectory,
     disableAutoStart,
     enableAutoStart,
     isAutoStartEnabled,

@@ -115,12 +115,69 @@ function deriveModelsUrl(routerUrl) {
   return url.toString();
 }
 
+function classifyModelCheckFailure(error, context = {}) {
+  const status = Number(context.status || error?.status || 0);
+  const code = String(error?.code || "");
+  const message = String(context.message || error?.message || "");
+  const lower = message.toLowerCase();
+
+  if (["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN"].includes(code) || /fetch failed|connection refused|econnrefused|enotfound|eai_again/.test(lower)) {
+    return {
+      category: "router_unreachable",
+      hint: "Router is not reachable. Start your local upstream/router and verify the Base URL.",
+    };
+  }
+  if (status === 401 || status === 403) {
+    return {
+      category: "auth_failed",
+      hint: "Authentication failed. Check the API key configured for this endpoint.",
+    };
+  }
+  if (status === 404 && /credential|provider|account|no active/i.test(message)) {
+    return {
+      category: "provider_credentials_missing",
+      hint: "Router is reachable, but the upstream provider/account credentials are not active.",
+    };
+  }
+  if ([408, 429, 502, 503, 504, 524].includes(status) || /timeout|timed out|temporar|rate limit|cloudflare/.test(lower)) {
+    return {
+      category: "upstream_transient",
+      hint: "Router or upstream provider returned a transient failure. Retry after checking provider status.",
+    };
+  }
+  if (status === 404) {
+    return {
+      category: "models_endpoint_missing",
+      hint: "The endpoint is reachable, but /models was not found. Check whether the Base URL includes the correct /v1 path.",
+    };
+  }
+  return {
+    category: status ? "http_error" : "unknown_error",
+    hint: status ? `Endpoint returned HTTP ${status}. Check the router URL and provider configuration.` : "Model check failed. Check the router URL and logs.",
+  };
+}
+
+function modelCheckErrorMessage(modelsUrl, failure, detail) {
+  return `Model check failed (${failure.category}) at ${modelsUrl}: ${detail}. ${failure.hint}`;
+}
+
 async function fetchAvailableModels(routerUrl, apiKey) {
   const modelsUrl = deriveModelsUrl(routerUrl);
   const headers = { Accept: "application/json" };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
-  const response = await fetch(modelsUrl, { method: "GET", headers });
+  let response;
+  try {
+    response = await fetch(modelsUrl, { method: "GET", headers });
+  } catch (error) {
+    const failure = classifyModelCheckFailure(error);
+    error.category = failure.category;
+    error.hint = failure.hint;
+    error.modelsUrl = modelsUrl;
+    error.message = modelCheckErrorMessage(modelsUrl, failure, error.message || "network failure");
+    throw error;
+  }
+
   const text = await response.text();
   let data;
   try {
@@ -131,7 +188,13 @@ async function fetchAvailableModels(routerUrl, apiKey) {
 
   if (!response.ok) {
     const message = data?.error?.message || data?.message || text || `HTTP ${response.status}`;
-    throw new Error(`Model check failed at ${modelsUrl}: ${message}`);
+    const failure = classifyModelCheckFailure(null, { status: response.status, message });
+    const error = new Error(modelCheckErrorMessage(modelsUrl, failure, message));
+    error.category = failure.category;
+    error.hint = failure.hint;
+    error.modelsUrl = modelsUrl;
+    error.status = response.status;
+    throw error;
   }
 
   const rawModels = Array.isArray(data) ? data : data.data || data.models || [];
@@ -305,6 +368,7 @@ const {
 module.exports = {
   buildAntigravityModelList,
   builtInAliasForModel,
+  classifyModelCheckFailure,
   collectModelCandidates,
   decodeResponseBody,
   deriveModelsUrl,

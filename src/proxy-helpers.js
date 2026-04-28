@@ -1,5 +1,6 @@
 const { redactText } = require("./logging");
-const { logProxyError, logProxyRetry } = require("./proxy-logger");
+const { extractModelFromBody, extractModelFromUrl } = require("./models");
+const { logProxyError, logProxyPass, logProxyRetry } = require("./proxy-logger");
 const { decodeResponseBody } = require("./model-serialization");
 
 const ROUTER_STRIP_HEADERS = new Set([
@@ -109,6 +110,54 @@ function logPassthroughResponse({ req, statusCode, targetHost, requestPath, raw,
     }
 }
 
+function logChatPassthrough({ req, bodyBuffer, statusCode, targetHost, requestPath }) {
+    if (!isChatRequestUrl(req && req.url)) return;
+    const model = extractModelFromBody(bodyBuffer) || extractModelFromUrl(req.url) || "unknown";
+    logProxyPass({
+        label: "CHAT PASS",
+        statusCode,
+        method: req.method,
+        targetHost,
+        requestPath,
+        extra: `model=${model}`,
+    });
+}
+
+function isRetryableUpstreamStatus(statusCode) {
+    return [408, 429, 502, 503, 504, 524].includes(Number(statusCode));
+}
+
+function routerErrorBody(statusCode, bodyText) {
+    const fallback = bodyText || `Upstream ${statusCode}`;
+    try {
+        const parsed = JSON.parse(bodyText);
+        if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+        // Non-JSON upstream errors, such as Cloudflare HTML 524 pages, are wrapped below.
+    }
+    return {
+        error: {
+            message: fallback,
+            type: "upstream_error",
+            status: Number(statusCode),
+        },
+    };
+}
+
+async function sendUpstreamErrorResponse(res, response) {
+    const statusCode = response.status || 502;
+    const bodyText = await response.text().catch(() => "");
+    const payload = routerErrorBody(statusCode, bodyText);
+    if (!res.headersSent) {
+        res.writeHead(statusCode, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache",
+        });
+    }
+    if (!res.writableEnded) res.end(JSON.stringify(payload));
+    return bodyText;
+}
+
 
 async function retryWithBackoff(fetchFn, options) {
     const maxRetries = Number(options.maxRetries || 0);
@@ -122,7 +171,7 @@ async function retryWithBackoff(fetchFn, options) {
             const response = await fetchFn();
             lastResponse = response;
 
-            if (!response.ok && (response.status === 503 || response.status === 502 || response.status === 504)) {
+            if (!response.ok && isRetryableUpstreamStatus(response.status)) {
                 if (attempt < maxRetries) {
                     const waitMs = retryDelay * Math.pow(retryBackoff, attempt);
                     logProxyRetry({
@@ -165,10 +214,14 @@ module.exports = {
     isFetchUserInfoRequest,
     isLoadCodeAssistRequest,
     isModelBootstrapMergeRequest,
+    isRetryableUpstreamStatus,
+    logChatPassthrough,
     logPassthroughResponse,
     passthroughLogLabel,
     responseBodySnippetForLog,
     retryWithBackoff,
+    routerErrorBody,
     safeRequestPath,
+    sendUpstreamErrorResponse,
     shouldBypassIntercept,
 };

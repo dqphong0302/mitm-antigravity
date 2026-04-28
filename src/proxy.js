@@ -20,13 +20,16 @@ const {
   isAccountBootstrapRequest,
   isChatRequestUrl,
   isModelBootstrapMergeRequest,
+  logChatPassthrough,
   logPassthroughResponse,
   retryWithBackoff,
   safeRequestPath,
+  sendUpstreamErrorResponse,
 } = require("./proxy-helpers");
 const {
   logProxyError,
-  logProxyPass,
+  logProxyMap,
+  logProxyOk,
   logProxyReady,
 } = require("./proxy-logger");
 
@@ -48,19 +51,6 @@ async function runProxy(options) {
     cachedTargetIPs.set(targetHost, addresses[0]);
     return addresses[0];
   }
-  function logChatPassthrough(req, bodyBuffer, statusCode, targetHost, requestPath) {
-    if (!isChatRequestUrl(req.url)) return;
-    const model = extractModelFromBody(bodyBuffer) || extractModelFromUrl(req.url) || "unknown";
-    logProxyPass({
-      label: "CHAT PASS",
-      statusCode,
-      method: req.method,
-      targetHost,
-      requestPath,
-      extra: `model=${model}`,
-    });
-  }
-
   async function passthrough(req, res, bodyBuffer) {
     try {
       const requestHost = String(req.headers.host || "").split(":")[0];
@@ -118,7 +108,7 @@ async function runProxy(options) {
           return;
         }
 
-        logChatPassthrough(req, bodyBuffer, forwardRes.statusCode, targetHost, requestPath);
+        logChatPassthrough({ req, bodyBuffer, statusCode: forwardRes.statusCode, targetHost, requestPath });
 
         res.writeHead(forwardRes.statusCode, forwardRes.headers);
         forwardRes.pipe(res);
@@ -147,6 +137,14 @@ async function runProxy(options) {
       if (mappedEntry && mappedEntry.reasoning_effort) body.reasoning_effort = mappedEntry.reasoning_effort;
 
       const headers = buildRouterHeaders(req.headers, options.apiKey);
+      const targetModel = body.model || originalModel;
+      const reasoning = body.reasoning_effort || "";
+
+      logProxyMap({
+        sourceModel: originalModel,
+        targetModel,
+        reasoning,
+      });
 
       const startTime = Date.now();
       const response = await retryWithBackoff(
@@ -163,8 +161,9 @@ async function runProxy(options) {
       );
 
       if (!response.ok) {
-        const errText = await response.text().catch(() => "");
-        throw new Error(`Upstream ${response.status}: ${errText}`);
+        const errText = await sendUpstreamErrorResponse(res, response);
+        logProxyError({ message: `upstream ${response.status}`, body: errText });
+        return;
       }
 
       const contentType = response.headers.get("content-type") || "application/json";
@@ -192,6 +191,7 @@ async function runProxy(options) {
       }
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      logProxyOk({ model: targetModel, reasoning, elapsedSeconds: elapsed });
       if (Number(elapsed) >= 30) {
         logProxyError({ message: `slow upstream response ${elapsed}s` });
       }

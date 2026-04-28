@@ -186,6 +186,7 @@ function guiHtml() {
               <h2 class="panel-title"><span data-i18n="mapping.title">Built-in Model Mapping</span> <span class="tag neutral" id="mappingCount">0/6 mapped</span></h2>
               <p class="panel-subtitle" data-i18n="mapping.hint">Go to Endpoint API → Load, Test & Save to populate the model dropdown list.</p>
             </div>
+            <div id="mappingReadiness" class="readiness-stack"></div>
             <div class="table-scroll">
               <table>
                 <thead>

@@ -33,6 +33,5 @@
       "src/**/*.js"
     ],
     "outputPath": "dist"
-  },
-  "main": "index.js"
+  }
 }

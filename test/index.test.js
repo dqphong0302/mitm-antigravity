@@ -35,6 +35,17 @@ test("parsePidsFromOutput returns unique pids from shell output", () => {
   assert.deepEqual(mitm.parsePidsFromOutput("123\n456 123\n\n"), ["123", "456"]);
 });
 
+test("formatPortOwners renders process names and pids", () => {
+  assert.equal(mitm.formatPortOwners([{ pid: "123", name: "node" }, { pid: "456", name: "nginx" }]), "node#123, nginx#456");
+});
+
+test("classifyModelCheckFailure identifies common upstream failures", () => {
+  assert.equal(mitm.classifyModelCheckFailure({ code: "ECONNREFUSED", message: "connect ECONNREFUSED" }).category, "router_unreachable");
+  assert.equal(mitm.classifyModelCheckFailure(null, { status: 401, message: "Unauthorized" }).category, "auth_failed");
+  assert.equal(mitm.classifyModelCheckFailure(null, { status: 404, message: "No active credentials for provider" }).category, "provider_credentials_missing");
+  assert.equal(mitm.classifyModelCheckFailure(null, { status: 524, message: "timeout" }).category, "upstream_transient");
+});
+
 test("stripDnsEntriesFromHostsContent removes managed and exact host entries only", () => {
   const input = [
     "127.0.0.1 localhost",
@@ -234,6 +245,19 @@ test("normalizeModelMap keeps only the six mappable built-in aliases", () => {
   assert.equal(result["custom-router-model"], undefined);
 });
 
+test("mapped Antigravity 3.1 entries preserve router model and reasoning effort", () => {
+  const entry = mitm.getMappedEntry("gemini-3.1-pro-high", {
+    modelMap: {
+      "gemini-3.1-pro-high": {
+        model: "cx/gpt-5.5",
+        reasoning_effort: "high",
+      },
+    },
+  });
+
+  assert.deepEqual(entry, { model: "cx/gpt-5.5", reasoning_effort: "high" });
+});
+
 test("proxy defaults to passthrough except model list and LLM endpoints", () => {
   assert.equal(mitm.isFetchAvailableModelsRequest("/v1internal:fetchAvailableModels"), true);
   assert.equal(mitm.isLoadCodeAssistRequest("/v1internal:loadCodeAssist"), true);
@@ -241,6 +265,29 @@ test("proxy defaults to passthrough except model list and LLM endpoints", () => 
   assert.equal(mitm.isAccountBootstrapRequest("/v1internal:fetchUserInfo"), true);
   assert.equal(mitm.isChatRequestUrl("/v1internal:fetchUserInfo"), false);
   assert.equal(mitm.isAccountBootstrapRequest("/v1internal:streamGenerateContent"), false);
+});
+
+test("chat passthrough logging records unmapped model names", () => {
+  const messages = [];
+  const originalLog = console.log;
+  const bodyBuffer = Buffer.from(JSON.stringify({ model: "gemini-3-flash-agent" }));
+
+  try {
+    console.log = (message) => messages.push(String(message));
+    mitm.logChatPassthrough({
+      req: { method: "POST", url: "/v1internal:streamGenerateContent" },
+      bodyBuffer,
+      statusCode: 200,
+      targetHost: "cloudcode-pa.googleapis.com",
+      requestPath: "/v1internal:streamGenerateContent",
+    });
+  } finally {
+    console.log = originalLog;
+  }
+
+  const added = messages.join("\n");
+  assert.match(added, /CHAT PASS/);
+  assert.match(added, /model=gemini-3-flash-agent/);
 });
 
 test("readConfig keeps legacy runtime config and drops custom model mappings", () => {
@@ -282,6 +329,22 @@ test("compact proxy logger redacts and shortens values", () => {
   assert.match(compact, /\[redacted-email\]/);
   assert.doesNotMatch(compact, /sk-super-secret-token/);
   assert.doesNotMatch(compact, /user@example\.com/);
+});
+
+test("upstream retry and error helpers preserve provider failures", () => {
+  assert.equal(mitm.isRetryableUpstreamStatus(429), true);
+  assert.equal(mitm.isRetryableUpstreamStatus(524), true);
+  assert.equal(mitm.isRetryableUpstreamStatus(404), false);
+
+  assert.deepEqual(
+    mitm.routerErrorBody(404, '{"error":{"message":"No active credentials for provider: antigravity"}}'),
+    { error: { message: "No active credentials for provider: antigravity" } }
+  );
+
+  const wrapped = mitm.routerErrorBody(524, "<html>timeout</html>");
+  assert.equal(wrapped.error.type, "upstream_error");
+  assert.equal(wrapped.error.status, 524);
+  assert.match(wrapped.error.message, /timeout/);
 });
 
 test("compact proxy logger writes one-line messages", () => {

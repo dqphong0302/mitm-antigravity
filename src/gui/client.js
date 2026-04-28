@@ -225,6 +225,23 @@ function guiClientScript() {
       setMetric("s-router", status.routerUrl || "—", "neutral");
       setMetric("s-autostart", status.autoStart && status.autoStart.enabled ? t("status.enabled") : t("status.disabled"), status.autoStart && status.autoStart.enabled ? "ok" : "warn");
       renderProxyToggle(status);
+      renderReadinessWarnings(status);
+    }
+
+    function readinessMessage(text) {
+      return '<div class="status warn readiness-item">' + esc(text) + '</div>';
+    }
+
+    function renderReadinessWarnings(status) {
+      const target = $("mappingReadiness");
+      if (!target) return;
+      const warnings = [];
+      if (status.dnsConfigured && !status.proxyListening) warnings.push(t("readiness.dnsWithoutProxy"));
+      if (status.proxyListening && !status.dnsConfigured) warnings.push(t("readiness.proxyWithoutDns"));
+      if (!status.certInstalled) warnings.push(t("readiness.certMissing"));
+      if (status.nodeTrustSupported && !status.nodeTrustApplied) warnings.push(t("readiness.nodeTrustMissing"));
+      if (status.portOwnerText && !status.proxyListening) warnings.push(t("readiness.portBusy", { port: status.port || 443, owner: status.portOwnerText }));
+      target.innerHTML = warnings.map(readinessMessage).join("");
     }
 
     async function loadStatus() {
@@ -275,7 +292,8 @@ function guiClientScript() {
         renderMappings();
         loadStatus();
       } catch (error) {
-        showStatus("endpointStatus", t("error.prefix", { message: error.message }), "err");
+        const detail = error.hint ? error.message + " " + error.hint : error.message;
+        showStatus("endpointStatus", t("error.prefix", { message: detail }), "err");
       } finally {
         $("checkBtn").disabled = false;
       }
