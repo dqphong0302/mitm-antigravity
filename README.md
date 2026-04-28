@@ -1,64 +1,74 @@
 # MITM Antigravity
 
-**A local proxy and desktop control panel for routing Google Antigravity model requests to your own compatible upstream endpoint.**
+<p align="center">
+  <strong>Local-first proxy and desktop control panel for routing Google Antigravity model requests to OpenAI-compatible upstreams.</strong>
+</p>
 
-[Features](#features) · [Quick start](#quick-start) · [Configuration](#configuration) · [Model mapping](#model-mapping) · [Build](#build) · [Safety notes](#safety-notes)
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#cli-reference">CLI</a> ·
+  <a href="#build">Build</a> ·
+  <a href="#safety">Safety</a>
+</p>
+
+<p align="center">
+  <img alt="Node.js 18+" src="https://img.shields.io/badge/Node.js-18%2B-3c873a?style=flat-square">
+  <img alt="Tauri" src="https://img.shields.io/badge/Desktop-Tauri-24c8db?style=flat-square">
+  <img alt="Platform" src="https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey?style=flat-square">
+  <img alt="Status" src="https://img.shields.io/badge/Status-Local--first-7c3aed?style=flat-square">
+</p>
 
 ---
 
 ## Overview
 
-MITM Antigravity runs a local HTTPS proxy for selected Google Antigravity traffic.
-It can generate and trust a local TLS certificate, redirect Antigravity hosts to your
-machine, inspect supported generation requests, and forward mapped model calls to a
-configurable OpenAI-compatible upstream endpoint.
+**MITM Antigravity** runs a local HTTPS proxy for selected Google Antigravity traffic.
+It can generate and trust a local TLS certificate, redirect configured Antigravity
+hosts to your machine, inspect supported generation requests, and forward mapped
+model calls to your own OpenAI-compatible endpoint.
 
-The project includes two ways to use the tool:
+Use it as either:
 
-- **Desktop GUI**: a Tauri control panel for configuration, model mapping, proxy
-  control, system setup, and logs.
-- **CLI/backend binary**: a standalone command-line executable that can run the
-  proxy directly on macOS, Windows, or Linux-like environments.
+- **Desktop GUI** — visual control panel for setup, configuration, model mapping,
+  proxy control, diagnostics, and logs.
+- **CLI/backend binary** — standalone command-line tool for scripting or direct
+  proxy operation.
 
 > [!IMPORTANT]
-> This tool modifies local networking and certificate trust settings when setup is
-> applied. Use it only on machines you control and understand the implications of
-> installing a local trusted certificate.
+> This tool can modify local networking and certificate trust settings. Use it only
+> on machines you control, and review the safety notes before applying setup.
 
 ---
 
 ## Features
 
-- Local HTTPS proxy for Antigravity generation endpoints.
-- Conservative routing: non-target traffic passes through by default.
-- Explicit model mapping for supported Antigravity aliases.
-- OpenAI-compatible upstream endpoint support.
-- API key, endpoint, model, retry, and mapping configuration.
-- Import/export configuration as portable JSON.
-- Compact GUI with light/dark/system themes and English/Vietnamese labels.
-- Backend and proxy logs with secret redaction.
-- Cross-platform CLI binary build using `pkg`.
-- Native desktop app build using Tauri.
+- 🔁 **Local HTTPS proxy** for selected Antigravity generation endpoints.
+- 🧭 **Conservative routing**: unmapped and non-target traffic passes through.
+- 🧩 **Explicit model mapping** from Antigravity aliases to upstream models.
+- 🔌 **OpenAI-compatible upstream** endpoint support.
+- 🖥️ **Desktop control panel** with configuration, logs, diagnostics, and themes.
+- 🌐 **English/Vietnamese UI labels** for a smoother local workflow.
+- 📦 **Import/export configuration** as portable JSON.
+- 🧪 **Doctor diagnostics** for readiness checks and actionable troubleshooting.
+- 🔐 **Secret-aware logging** with redaction for common sensitive values.
+- 🛠️ **Cross-platform builds** via `pkg` and Tauri.
 
 ---
 
 ## Requirements
 
-For source development:
-
-- Node.js 18+
-- npm
-- Rust toolchain and Tauri prerequisites, only if building the desktop app
-
-For release users:
-
-- Windows x64: use the Windows `.exe` build.
-- macOS Apple Silicon: use the macOS arm64 build.
-- Administrator privileges may be required for certificate and hosts/DNS setup.
+| Use case | Requirements |
+| --- | --- |
+| Source development | Node.js 18+, npm |
+| Desktop build | Rust toolchain + Tauri prerequisites |
+| System setup | Administrator privileges for certificate and hosts/DNS changes |
+| Release binary | Matching platform build, no Node.js required |
 
 ---
 
-## Quick start
+## Quick Start
 
 ### 1. Install dependencies
 
@@ -66,26 +76,26 @@ For release users:
 npm install
 ```
 
-### 2. Open the GUI
+### 2. Launch the GUI
 
 ```bash
 node index.js gui
 ```
 
-The GUI runs at:
+Open:
 
 ```text
 http://127.0.0.1:20245/
 ```
 
-Useful GUI options:
+Useful options:
 
 ```bash
 node index.js gui --ui-port 20246
 node index.js gui --no-open
 ```
 
-### 3. Configure endpoint and models
+### 3. Configure your upstream
 
 In the GUI:
 
@@ -93,36 +103,35 @@ In the GUI:
 2. Enter your upstream endpoint and API key.
 3. Load available upstream models.
 4. Open **Model Mapping**.
-5. Map the Antigravity model aliases you want to route.
+5. Map Antigravity aliases to upstream models.
 6. Save mapping and reload the proxy.
 
-### 4. Apply local system setup
+### 4. Apply local setup and start
 
-Open **Proxy & System**, then run:
+Open **Proxy & System**:
 
-- **Apply DNS & Cert** once to generate/trust the certificate and update hosts.
-- **START** to start the local proxy.
-- **STOP** to stop the proxy.
+- Click **Apply DNS & Cert** once to generate/trust the certificate and update hosts.
+- Click **START** to start the local proxy.
+- Click **STOP** to stop it.
 
-The GUI does not store your administrator password. macOS/Windows/Linux will prompt
-for elevation when needed.
+The GUI does **not** store your administrator password. Your OS will prompt for
+elevation when needed.
 
 ---
 
-## Using the release binary
+## Release Binary
 
-The backend binary can be run directly without installing Node.js.
+The backend binary can run directly without installing Node.js.
 
 ### Windows
-
-Open PowerShell in the release folder:
 
 ```powershell
 .\mitm-antigravity-win-x64.exe --help
 .\mitm-antigravity-win-x64.exe gui
 ```
 
-For certificate/hosts setup, run PowerShell or Command Prompt as Administrator.
+Run PowerShell or Command Prompt as Administrator when applying certificate or
+hosts setup.
 
 ### macOS
 
@@ -131,8 +140,8 @@ For certificate/hosts setup, run PowerShell or Command Prompt as Administrator.
 ./mitm-antigravity-macos-arm64 gui
 ```
 
-If macOS blocks the unsigned binary, allow it from **System Settings → Privacy &
-Security**, or remove quarantine for your private build:
+If macOS blocks an unsigned private build, allow it from **System Settings →
+Privacy & Security**, or remove quarantine:
 
 ```bash
 xattr -dr com.apple.quarantine ./mitm-antigravity-macos-arm64
@@ -142,19 +151,19 @@ xattr -dr com.apple.quarantine ./mitm-antigravity-macos-arm64
 
 ## Configuration
 
-The app stores runtime settings under the user profile:
+Runtime settings are stored under the user profile:
 
 ```text
 ~/.mitm-antigravity/settings.json
 ```
 
-You can inspect paths with:
+Inspect config paths:
 
 ```bash
 node index.js config paths
 ```
 
-Initialize or print the current redacted configuration:
+Initialize or print the redacted current configuration:
 
 ```bash
 node index.js config init
@@ -188,13 +197,12 @@ Example shape:
 ```
 
 > [!WARNING]
-> Do not publish your personal `settings.local.json`, `config.local.json`, or any
-> file containing API keys. Release builds should ship with a stripped sample
-> `settings.json` only.
+> Never publish personal configs, API keys, generated certificates, or private
+> `settings.local.json` / `config.local.json` files.
 
 ---
 
-## Import and export
+## Import / Export
 
 Export current configuration:
 
@@ -214,7 +222,7 @@ when importing.
 
 ---
 
-## Model mapping
+## Model Mapping
 
 MITM Antigravity is intentionally conservative:
 
@@ -222,7 +230,7 @@ MITM Antigravity is intentionally conservative:
 - Unmapped model requests pass through to Google.
 - Only explicitly mapped generation requests are routed to your upstream endpoint.
 
-Supported built-in aliases:
+Built-in aliases:
 
 ```text
 gemini-3.1-pro-high
@@ -233,7 +241,7 @@ claude-opus-4-6-thinking
 gpt-oss-120b-medium
 ```
 
-Example one-off start command:
+Start with one-off mappings:
 
 ```bash
 node index.js start \
@@ -257,53 +265,45 @@ node index.js start --always-intercept
 
 ---
 
-## CLI reference
+## CLI Reference
 
 ```text
-mitm-antigravity [start|setup|stop|cleanup|doctor|status|gui|wizard|config|export-config|import-config|uninstall-cert] [options]
-mitm-antigravity wizard
-mitm-antigravity doctor
-mitm-antigravity cleanup
-mitm-antigravity config [list|path|paths|init|set key=value ...]
+mitm-antigravity [command] [options]
+
+Commands:
+  start              Start the local HTTPS proxy
+  setup              Apply DNS/hosts and certificate setup
+  stop               Stop the proxy
+  cleanup            Stop proxy and remove managed DNS entries
+  doctor             Run diagnostics
+  status             Print current status
+  gui                Start the local GUI
+  wizard             Run interactive setup wizard
+  config             Manage runtime configuration
+  export-config      Export configuration to JSON
+  import-config      Import configuration from JSON
+  uninstall-cert     Remove managed certificate
 ```
 
-Recommended CLI flow:
+Recommended flow:
 
 ```bash
 node index.js wizard
-node index.js setup --password '<sudo-password>'
+node index.js setup
 node index.js start --skip-setup
 node index.js doctor
-node index.js stop --password '<sudo-password>'
+node index.js stop
 ```
-
-Interactive setup wizard:
-
-```bash
-node index.js wizard
-```
-
-The wizard guides users through endpoint, API key, forced model, built-in model
-mappings, save confirmation, and optional GUI launch.
 
 Common commands:
 
 ```bash
-node index.js wizard
 node index.js gui
-node index.js setup
-node index.js start
-node index.js start --skip-setup
+node index.js wizard
 node index.js status
 node index.js doctor
-node index.js stop
 node index.js cleanup
-node index.js uninstall-cert
 ```
-
-`stop`, `cleanup`, and `stop-cleanup` all stop the proxy and remove managed DNS
-entries, which restores Antigravity's normal networking when you no longer use
-the tool.
 
 Useful options:
 
@@ -327,7 +327,7 @@ Useful options:
 
 ### CLI/backend binaries
 
-Build macOS arm64, macOS x64, and Windows x64 backend binaries:
+Build macOS arm64, macOS x64, and Windows x64 binaries:
 
 ```bash
 npm run build:pkg
@@ -346,7 +346,7 @@ dist/settings.json
 
 ### Tauri desktop app
 
-Build the native app for the current OS:
+Build the native desktop app for the current OS:
 
 ```bash
 npm run build
@@ -358,12 +358,12 @@ On macOS, output is written under:
 src-tauri/target/release/bundle/macos/MITM AG.app
 ```
 
-Tauri desktop bundles are native-platform builds. Build Windows installers on
-Windows or in a dedicated CI/cross-build environment.
+Tauri bundles are native-platform builds. Build Windows installers on Windows or
+in a dedicated CI/cross-build environment.
 
 ---
 
-## Project structure
+## Project Structure
 
 | Path | Purpose |
 | --- | --- |
@@ -407,27 +407,20 @@ npm run tauri:dev
 
 ---
 
-## Roadmap
+## Safety
 
-Planned improvements for public users:
-
-- Add an interactive terminal UI for users who prefer a guided CLI flow over flags.
-- Add safer first-run setup prompts for endpoint, API key, and model mapping.
-- Add release checks that prevent accidental packaging of local secrets.
-- Add signed installers for supported desktop platforms.
-
----
-
-## Safety notes
-
-- This project installs a local TLS certificate when setup is applied.
-- Hosts redirection affects the configured target hosts system-wide.
+- Setup installs a local TLS certificate.
+- Hosts redirection affects configured target hosts system-wide.
 - Only selected generation endpoints are intercepted; other paths pass through.
 - If Antigravity or the runtime uses certificate pinning, interception may fail.
-- Never commit or publish local secrets, API keys, generated certificates, or private
-  `settings.local.json` files.
-- Review logs before sharing them publicly; the logger redacts common secrets, but
-  you should still verify sensitive content manually.
+- Do not commit local secrets, API keys, generated certificates, or private configs.
+- Review logs before sharing them publicly, even though common secrets are redacted.
+
+To restore normal networking, stop the proxy and remove managed DNS entries:
+
+```bash
+node index.js cleanup
+```
 
 ---
 

@@ -17,8 +17,8 @@
     "build": "npm run tauri:build",
     "tauri:prepare": "node scripts/prepare-tauri.js",
     "tauri:prepare:dev": "npm run build:pkg && node scripts/prepare-tauri.js",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "npm run build:pkg && tauri build"
+    "tauri:dev": "npx tauri dev",
+    "tauri:build": "npm run build:pkg && npx tauri build"
   },
   "dependencies": {
     "selfsigned": "^2.4.1"
