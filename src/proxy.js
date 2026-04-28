@@ -48,6 +48,18 @@ async function runProxy(options) {
     cachedTargetIPs.set(targetHost, addresses[0]);
     return addresses[0];
   }
+  function logChatPassthrough(req, bodyBuffer, statusCode, targetHost, requestPath) {
+    if (!isChatRequestUrl(req.url)) return;
+    const model = extractModelFromBody(bodyBuffer) || extractModelFromUrl(req.url) || "unknown";
+    logProxyPass({
+      label: "CHAT PASS",
+      statusCode,
+      method: req.method,
+      targetHost,
+      requestPath,
+      extra: `model=${model}`,
+    });
+  }
 
   async function passthrough(req, res, bodyBuffer) {
     try {
@@ -106,17 +118,7 @@ async function runProxy(options) {
           return;
         }
 
-        if (isChatRequestUrl(req.url)) {
-          const model = extractModelFromBody(bodyBuffer) || extractModelFromUrl(req.url) || "unknown";
-          logProxyPass({
-            label: "CHAT PASS",
-            statusCode: forwardRes.statusCode,
-            method: req.method,
-            targetHost,
-            requestPath,
-            extra: `model=${model}`,
-          });
-        }
+        logChatPassthrough(req, bodyBuffer, forwardRes.statusCode, targetHost, requestPath);
 
         res.writeHead(forwardRes.statusCode, forwardRes.headers);
         forwardRes.pipe(res);
