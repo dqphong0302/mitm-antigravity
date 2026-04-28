@@ -245,6 +245,9 @@ function guiClientScript() {
       const data = await api("/api/bootstrap");
       state.config = data.config;
       state.builtInAliases = data.antigravityAliases || [];
+      if (data.cachedModels && data.cachedModels.length > 0 && state.models.length === 0) {
+        state.models = data.cachedModels;
+      }
       $("configPath").textContent = data.configPath;
       $("settingsConfigPath").textContent = data.configPath || "—";
       $("settingsBundledPath").textContent = data.bundledSettingsPath || "—";

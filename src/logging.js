@@ -4,7 +4,7 @@ const path = require("path");
 
 const { APP_NAME } = require("./constants");
 
-const DEFAULT_MAX_LOG_BYTES = 220 * 1024;
+const DEFAULT_MAX_LOG_BYTES = 100 * 1024;
 const SECRET_KEY_PATTERN = /(api[-_]?key|token|password|authorization|secret)/i;
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const BEARER_PATTERN = /Bearer\s+[A-Za-z0-9._~+/=-]+/gi;

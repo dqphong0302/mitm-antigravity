@@ -81,8 +81,10 @@ function createRouteHandlers(options) {
 
 
 async function handleBootstrap(res) {
+  const cfg = readConfig();
   sendJson(res, 200, {
-    config: readConfig(),
+    config: cfg,
+    cachedModels: cfg.cachedModels || [],
     configPath: settingsPath(),
     bundledSettingsPath: bundledSettingsPath(),
     legacyConfigPath: configPath(),
@@ -109,12 +111,6 @@ async function handleSaveConfig(req, res) {
     modelMap,
   };
   writeConfig(next);
-  appendLog("info", "Config saved from UI", {
-    routerUrl: next.routerUrl,
-    model: next.model,
-    alwaysIntercept: next.alwaysIntercept,
-    mappedModels: Object.keys(next.modelMap || {}).length,
-  });
   sendJson(res, 200, { config: next });
 }
 
@@ -124,10 +120,10 @@ async function handleCheckKey(req, res) {
   const apiKey = String(body.apiKey || "");
   if (!routerUrl) throw new Error("Missing endpoint");
   const result = await fetchAvailableModels(routerUrl, apiKey);
-  appendLog("info", "Model list loaded from endpoint", {
-    routerUrl,
-    models: result.models ? result.models.length : 0,
-  });
+  if (result.models && result.models.length > 0) {
+    const cfg = readConfig();
+    writeConfig({ ...cfg, cachedModels: result.models });
+  }
   sendJson(res, 200, result);
 }
 
@@ -257,12 +253,6 @@ async function handleApplyDns(req, res, options) {
     remoteIp: cfg.remoteIp || options.remoteIp,
     sudoPassword,
   });
-  appendLog("info", "DNS/cert applied", {
-    targetHosts: targetHosts.length,
-    dnsAdded: dnsResult.added,
-    certInstalled: certResult.installed,
-    nodeTrustApplied: nodeTrust.applied,
-  });
   sendJson(res, 200, { cert: certResult, dns: dnsResult, nodeTrust });
 }
 
@@ -271,7 +261,6 @@ async function handleApplyAppTrust(res) {
   const targetHosts = targetHostsFrom(cfg);
   const cert = await generateCert(targetHosts, { force: false });
   const nodeTrust = await applyAntigravityNodeTrust(cert.cert);
-  appendLog("info", "App trust applied", { targetHosts: targetHosts.length, applied: nodeTrust.applied });
   sendJson(res, 200, { nodeTrust });
 }
 
@@ -283,7 +272,6 @@ async function handleRemoveDns(req, res) {
     targetHosts: targetHostsFrom(cfg),
     sudoPassword,
   });
-  appendLog("info", "DNS removed", { removed: dnsResult.removed });
   sendJson(res, 200, { dns: dnsResult });
 }
 
@@ -342,7 +330,6 @@ async function handleStatus(res, options) {
 async function handleDoctor(res, options) {
   const status = await collectGuiStatus(options);
   const report = buildDoctorReport(status);
-  appendLog("info", "Doctor report requested from UI", { summary: report.summary });
   sendJson(res, 200, { status, ...report });
 }
 
@@ -354,25 +341,21 @@ async function handleUninstallCert(req, res) {
   const result = certExists()
     ? await uninstallCert(certPath, primaryTargetHost(cfg), sudoPassword)
     : { removed: false };
-  appendLog("info", "Certificate uninstall requested from UI", { removed: result.removed });
   sendJson(res, 200, { cert: result });
 }
 
 async function handleEnableAutoStart(_req, res) {
   const result = await enableAutoStart();
-  appendLog("info", "Auto start enabled", { method: result.method, enabled: result.enabled });
   sendJson(res, 200, result);
 }
 
 async function handleDisableAutoStart(_req, res) {
   const result = await disableAutoStart();
-  appendLog("info", "Auto start disabled", { method: result.method, enabled: result.enabled });
   sendJson(res, 200, result);
 }
 
 async function handleClearLogs(_req, res) {
   clearLogs();
-  appendLog("info", "Logs cleared from UI");
   sendJson(res, 200, { cleared: true, paths: logPaths() });
 }
 
