@@ -149,7 +149,7 @@ function guiClientScript() {
     }
 
     function mappingReasoningValue(entry) {
-      return entry && typeof entry === "object" ? (entry.reasoning_effort || "") : "";
+      return entry && typeof entry === "object" ? (entry.reasoning_effort || entry.thinking || entry.reasoning || "") : "";
     }
 
     function makeModelCell(selected) {

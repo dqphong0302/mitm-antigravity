@@ -258,6 +258,20 @@ test("mapped Antigravity 3.1 entries preserve router model and reasoning effort"
   assert.deepEqual(entry, { model: "cx/gpt-5.5", reasoning_effort: "high" });
 });
 
+test("mapped entries normalize thinking and reasoning aliases to reasoning effort", () => {
+  const normalized = mitm.normalizeModelMap({
+    "gemini-3.1-pro-high": { model: "cx/gpt-5.5", thinking: "high" },
+    "gemini-3.1-pro-low": { model: "cx/gpt-5.5", reasoning: "low" },
+  });
+
+  assert.deepEqual(normalized["gemini-3.1-pro-high"], { model: "cx/gpt-5.5", reasoning_effort: "high" });
+  assert.deepEqual(normalized["gemini-3.1-pro-low"], { model: "cx/gpt-5.5", reasoning_effort: "low" });
+  assert.deepEqual(
+    mitm.getMappedEntry("MODEL_PLACEHOLDER_M37", { modelMap: normalized }),
+    { model: "cx/gpt-5.5", reasoning_effort: "high" }
+  );
+});
+
 test("proxy defaults to passthrough except model list and LLM endpoints", () => {
   assert.equal(mitm.isFetchAvailableModelsRequest("/v1internal:fetchAvailableModels"), true);
   assert.equal(mitm.isLoadCodeAssistRequest("/v1internal:loadCodeAssist"), true);

@@ -59,7 +59,7 @@ function normalizeMappingEntry(entry) {
   }
   if (typeof entry === "object" && !Array.isArray(entry)) {
     const model = String(entry.model || "").trim();
-    const reasoningEffort = String(entry.reasoning_effort || "").trim();
+    const reasoningEffort = String(entry.reasoning_effort || entry.thinking || entry.reasoning || "").trim();
     if (!model) return null;
     return reasoningEffort ? { model, reasoning_effort: reasoningEffort } : { model };
   }

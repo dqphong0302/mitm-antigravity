@@ -5,7 +5,7 @@ const path = require("path");
 
 const { DEFAULT_TARGET, IS_MAC, IS_WIN } = require("./constants");
 const { appDir, runtimeDir } = require("./config");
-const { appendLog, proxyLogPath } = require("./logging");
+const { appendLog, proxyLogPath, readLogFile } = require("./logging");
 const { execPowerShell, execPromise, execWithSudo, shellQuote } = require("./system");
 
 function normalizeProcessName(value) {
@@ -131,6 +131,66 @@ async function waitForProxyHealth(port, targetHost = DEFAULT_TARGET, attempts = 
   return false;
 }
 
+function proxyLaunchEnv(logPath) {
+  return {
+    ...process.env,
+    MITM_APP_DIR: appDir(),
+    MITM_PROXY_LOG: logPath,
+  };
+}
+
+function windowsProxyArgs(port) {
+  const { cliEntrypointPath } = require("./config");
+  return process.pkg
+    ? ["start", "--skip-setup", "--port", String(port)]
+    : [cliEntrypointPath(), "start", "--skip-setup", "--port", String(port)];
+}
+
+function formatWindowsArgumentList(args) {
+  return args.map((arg) => String(arg).replace(/'/g, "''")).join("' '");
+}
+
+async function startWindowsProxyDetached({ port, logPath }) {
+  const { isWindowsElevated } = require("./system");
+  const args = windowsProxyArgs(port);
+  const cwd = runtimeDir();
+  const env = proxyLaunchEnv(logPath);
+
+  if (await isWindowsElevated()) {
+    const { spawn } = require("child_process");
+    const out = fs.openSync(logPath, "a");
+    try {
+      const child = spawn(process.execPath, args, {
+        detached: true,
+        stdio: ["ignore", out, out],
+        cwd,
+        env,
+        windowsHide: true,
+      });
+      child.unref();
+      appendLog("info", "Windows proxy spawned from elevated backend", {
+        pid: child.pid,
+        port,
+        cwd,
+        execPath: process.execPath,
+        args,
+      });
+    } finally {
+      fs.closeSync(out);
+    }
+    return;
+  }
+
+  const envAssignments = Object.entries({
+    MITM_APP_DIR: appDir(),
+    MITM_PROXY_LOG: logPath,
+  })
+    .map(([key, value]) => `$env:${key}='${String(value).replace(/'/g, "''")}'`)
+    .join("; ");
+  const script = `${envAssignments}; Start-Process -FilePath '${process.execPath.replace(/'/g, "''")}' -ArgumentList '${formatWindowsArgumentList(args)}' -WorkingDirectory '${cwd.replace(/'/g, "''")}' -WindowStyle Hidden`;
+  await execPowerShell(script, { elevated: true });
+}
+
 async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TARGET }) {
   if (await checkProxyHealth(port, targetHost)) {
     return { started: false, alreadyRunning: true, port };
@@ -146,27 +206,7 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
   appendLog("info", "Starting proxy process", { port, targetHost, logPath, execPath: process.execPath, pkg: Boolean(process.pkg), runtimeDir: runtimeDir() });
 
   if (IS_WIN) {
-    const { isWindowsElevated } = require("./system");
-    const { cliEntrypointPath } = require("./config");
-    if (await isWindowsElevated()) {
-      const { spawn } = require("child_process");
-      const out = fs.openSync(logPath, "a");
-      const args = process.pkg
-        ? ["start", "--skip-setup", "--port", String(port)]
-        : [cliEntrypointPath(), "start", "--skip-setup", "--port", String(port)];
-      const child = spawn(process.execPath, args, {
-        detached: true,
-        stdio: ["ignore", out, out],
-        cwd: runtimeDir(),
-        windowsHide: true,
-      });
-      child.unref();
-    } else {
-      const windowsArgs = process.pkg
-        ? `start --skip-setup --port ${Number(port)}`
-        : `${cliEntrypointPath()} start --skip-setup --port ${Number(port)}`;
-      await execPowerShell(`Start-Process -FilePath '${process.execPath.replace(/'/g, "''")}' -ArgumentList '${windowsArgs.replace(/'/g, "''")}' -WorkingDirectory '${runtimeDir().replace(/'/g, "''")}' -WindowStyle Hidden`, { elevated: true });
-    }
+    await startWindowsProxyDetached({ port, logPath });
   } else if (IS_MAC) {
     await bootstrapMacProxyLaunchDaemon({ sudoPassword, port, logPath });
   } else {
@@ -179,7 +219,10 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
   }
 
   if (!(await waitForProxyHealth(port, targetHost))) {
-    throw new Error(`Proxy did not start on port ${port}. Check ${logPath}`);
+    const logTail = readLogFile(logPath, 12 * 1024).trim();
+    const detail = logTail ? ` Recent proxy log:\n${logTail}` : " Proxy log is empty or unavailable.";
+    appendLog("error", "Proxy failed readiness check after launch", { port, targetHost, logPath });
+    throw new Error(`Proxy did not start on port ${port}. Check ${logPath}.${detail}`);
   }
 
   return { started: true, alreadyRunning: false, port, logPath };

@@ -240,17 +240,25 @@ async function runProxy(options) {
     return intercept(req, res, bodyBuffer, effectiveEntry, model || modelAlias);
   });
 
-  server.listen(options.port, () => {
-    logProxyReady({ port: options.port, routerUrl: options.routerUrl });
+  const listenHost = options.host || "0.0.0.0";
+  server.listen(options.port, listenHost, () => {
+    logProxyReady({
+      port: options.port,
+      routerUrl: options.routerUrl,
+      host: listenHost,
+      pid: process.pid,
+      platform: process.platform,
+      execPath: process.execPath,
+    });
   });
 
   server.on("error", (error) => {
     if (error.code === "EADDRINUSE") {
-      logProxyError({ message: `port ${options.port} already in use` });
+      logProxyError({ message: `port ${options.port} already in use`, code: error.code, host: listenHost, pid: process.pid });
     } else if (error.code === "EACCES") {
-      logProxyError({ message: `permission denied for port ${options.port}` });
+      logProxyError({ message: `permission denied for port ${options.port}; run MITM Antigravity as Administrator/root`, code: error.code, host: listenHost, pid: process.pid });
     } else {
-      logProxyError({ message: error.message });
+      logProxyError({ message: error.message, code: error.code, host: listenHost, pid: process.pid });
     }
     process.exit(1);
   });
