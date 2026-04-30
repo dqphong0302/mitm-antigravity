@@ -1,6 +1,5 @@
 name: Release
 
-# Trigger: push tag vX.Y.Z  →  tạo GitHub Release với binaries đầy đủ
 on:
   push:
     tags:
@@ -14,7 +13,7 @@ permissions:
 # ─────────────────────────────────────────────────────────────────────────────
 jobs:
   build-macos:
-    runs-on: macos-latest          # M-series runner (arm64)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -28,17 +27,34 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      # Cache pkg base binaries để không download lại giữa các run
+      - name: Cache pkg base binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.pkg-cache
+          key: pkg-macos-node20-${{ runner.arch }}-v1
+
       - run: npm ci
 
-      # ── pkg CLI binaries (macOS arm64 + x64) ──────────────────────────────
-      - name: Build pkg – macOS
+      # Build cả hai macOS binaries trước – prepare-tauri.js sẽ copy đúng cái vào resources
+      - name: Build pkg – macOS (arm64 + x64)
         run: npm run build:pkg:macos
+        env:
+          PKG_CACHE_PATH: ~/.pkg-cache
+
+      # Xác minh binary tồn tại trước khi Tauri build
+      - name: Verify pkg binaries
+        run: |
+          echo "=== dist/ contents ===" && ls -lh dist/
+          test -f dist/mitm-antigravity-macos-arm64 || (echo "ERROR: arm64 missing" && exit 1)
+          test -f dist/mitm-antigravity-macos-x64   || (echo "ERROR: x64 missing"   && exit 1)
 
       # ── Tauri .app / .dmg – arm64 ─────────────────────────────────────────
       - name: Tauri build – macOS arm64
         run: npx tauri build --target aarch64-apple-darwin
         env:
           CARGO_BUILD_TARGET: aarch64-apple-darwin
+          PKG_CACHE_PATH: ~/.pkg-cache
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
@@ -47,10 +63,10 @@ jobs:
         run: npx tauri build --target x86_64-apple-darwin
         env:
           CARGO_BUILD_TARGET: x86_64-apple-darwin
+          PKG_CACHE_PATH: ~/.pkg-cache
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      # ── Upload artifacts ───────────────────────────────────────────────────
       - uses: actions/upload-artifact@v4
         with:
           name: macos-pkg
@@ -84,20 +100,32 @@ jobs:
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache pkg base binaries
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pkg-cache
+          key: pkg-windows-node20-x64-v1
+
       - run: npm ci
 
-      # ── pkg CLI binaries (Windows x64 + arm64) ────────────────────────────
-      - name: Build pkg – Windows
+      - name: Build pkg – Windows (x64 + arm64)
         run: npm run build:pkg:windows
+        env:
+          PKG_CACHE_PATH: ~\AppData\Local\pkg-cache
 
-      # ── Tauri NSIS installer – x64 ────────────────────────────────────────
+      - name: Verify pkg binaries
+        shell: bash
+        run: |
+          echo "=== dist/ ===" && ls -lh dist/
+          test -f dist/mitm-antigravity-win-x64.exe || (echo "ERROR: win-x64 missing" && exit 1)
+
       - name: Tauri build – Windows x64
         run: npx tauri build
         env:
+          PKG_CACHE_PATH: ~\AppData\Local\pkg-cache
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      # ── Upload artifacts ───────────────────────────────────────────────────
       - uses: actions/upload-artifact@v4
         with:
           name: windows-pkg
@@ -123,10 +151,21 @@ jobs:
           node-version: "20"
           cache: npm
 
+      - name: Cache pkg base binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.pkg-cache
+          key: pkg-linux-x64-node20-v1
+
       - run: npm ci
 
       - name: Build pkg – Linux x64
         run: npx pkg . --targets node20-linux-x64 --out-path dist
+        env:
+          PKG_CACHE_PATH: ~/.pkg-cache
+
+      - name: Verify
+        run: test -f dist/mitm-antigravity-linux-x64 || (ls dist/ && exit 1)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -146,10 +185,21 @@ jobs:
           node-version: "20"
           cache: npm
 
+      - name: Cache pkg base binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.pkg-cache
+          key: pkg-linux-arm64-node20-v1
+
       - run: npm ci
 
       - name: Build pkg – Linux arm64
         run: npx pkg . --targets node20-linux-arm64 --out-path dist
+        env:
+          PKG_CACHE_PATH: ~/.pkg-cache
+
+      - name: Verify
+        run: test -f dist/mitm-antigravity-linux-arm64 || (ls dist/ && exit 1)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -157,7 +207,7 @@ jobs:
           path: dist/mitm-antigravity-linux-arm64
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JOB 4 – Tạo GitHub Release và upload tất cả artifacts
+# JOB 4 – Tạo GitHub Release
 # ─────────────────────────────────────────────────────────────────────────────
   release:
     needs: [build-macos, build-windows, build-linux-x64, build-linux-arm64]

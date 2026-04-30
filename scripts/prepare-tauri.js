@@ -31,7 +31,17 @@ const sourcePath = path.join(distDir, sourceName);
 const targetPath = path.join(resourcesDir, backendName);
 
 if (!fs.existsSync(sourcePath)) {
-    throw new Error(`Missing backend binary: ${sourcePath}. Run npm run build:pkg first.`);
+    // Binary chưa có – tự build thay vì crash.
+    // Chọn script build đúng platform để tránh download base binary không cần thiết.
+    const { execSync } = require("child_process");
+    const pkgScript = process.platform === "win32" ? "build:pkg:windows"
+                    : process.platform === "linux"  ? "build:pkg:linux"
+                    : "build:pkg:macos";
+    console.log(`Backend binary not found. Building with npm run ${pkgScript} ...`);
+    execSync(`npm run ${pkgScript}`, { stdio: "inherit", cwd: root });
+    if (!fs.existsSync(sourcePath)) {
+        throw new Error(`pkg build finished but binary still missing: ${sourcePath}`);
+    }
 }
 
 fs.mkdirSync(resourcesDir, { recursive: true });
