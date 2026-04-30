@@ -1,6 +1,6 @@
 [package]
 name = "mitm-ag-tauri"
-version = "0.2.0"
+version = "0.2.2"
 description = "MITM AG native desktop shell"
 authors = ["MITM Antigravity"]
 edition = "2021"
@@ -11,3 +11,4 @@ tauri-build = { version = "=2.5.6", features = [] }
 [dependencies]
 tauri                = { version = "=2.10.1", features = [] }
 tauri-plugin-updater = { version = "2" }
+serde_json           = "1"
