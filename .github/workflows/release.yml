@@ -85,7 +85,7 @@ jobs:
           path: src-tauri/target/x86_64-apple-darwin/release/bundle/
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JOB 2 – Windows  (x64 + arm64 pkg  +  Tauri NSIS installer x64)
+# JOB 2 – Windows  (x64 pkg  +  Tauri NSIS installer x64)
 # ─────────────────────────────────────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
@@ -103,15 +103,15 @@ jobs:
       - name: Cache pkg base binaries
         uses: actions/cache@v4
         with:
-          path: ~\AppData\Local\pkg-cache
+          path: ${{ runner.temp }}\pkg-cache
           key: pkg-windows-node20-x64-v1
 
       - run: npm ci
 
-      - name: Build pkg – Windows (x64 + arm64)
+      - name: Build pkg – Windows x64
         run: npm run build:pkg:windows
         env:
-          PKG_CACHE_PATH: ~\AppData\Local\pkg-cache
+          PKG_CACHE_PATH: ${{ runner.temp }}\pkg-cache
 
       - name: Verify pkg binaries
         shell: bash
@@ -122,16 +122,14 @@ jobs:
       - name: Tauri build – Windows x64
         run: npx tauri build
         env:
-          PKG_CACHE_PATH: ~\AppData\Local\pkg-cache
+          PKG_CACHE_PATH: ${{ runner.temp }}\pkg-cache
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-pkg
-          path: |
-            dist/mitm-antigravity-win-x64.exe
-            dist/mitm-antigravity-win-arm64.exe
+          path: dist/mitm-antigravity-win-x64.exe
 
       - uses: actions/upload-artifact@v4
         with:
@@ -160,7 +158,7 @@ jobs:
       - run: npm ci
 
       - name: Build pkg – Linux x64
-        run: npx pkg . --targets node20-linux-x64 --out-path dist
+        run: node scripts/build-pkg.js linux-x64
         env:
           PKG_CACHE_PATH: ~/.pkg-cache
 
@@ -194,7 +192,7 @@ jobs:
       - run: npm ci
 
       - name: Build pkg – Linux arm64
-        run: npx pkg . --targets node20-linux-arm64 --out-path dist
+        run: node scripts/build-pkg.js linux-arm64
         env:
           PKG_CACHE_PATH: ~/.pkg-cache
 
@@ -231,7 +229,6 @@ jobs:
             release-artifacts/macos-pkg/mitm-antigravity-macos-arm64
             release-artifacts/macos-pkg/mitm-antigravity-macos-x64
             release-artifacts/windows-pkg/mitm-antigravity-win-x64.exe
-            release-artifacts/windows-pkg/mitm-antigravity-win-arm64.exe
             release-artifacts/linux-x64-pkg/mitm-antigravity-linux-x64
             release-artifacts/linux-arm64-pkg/mitm-antigravity-linux-arm64
             release-artifacts/macos-tauri-arm64/**/*.dmg
