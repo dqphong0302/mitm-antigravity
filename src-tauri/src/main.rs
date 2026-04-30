@@ -13,6 +13,12 @@ use std::{
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 
+fn js_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+     .replace('`',  "\\`")
+     .replace('$',  "\\$")
+}
+
 const GUI_ADDR: &str = "127.0.0.1:20245";
 const GUI_URL: &str = "http://127.0.0.1:20245/";
 
@@ -113,18 +119,27 @@ fn wait_for_gui() -> bool {
 
 fn check_for_updates(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        // Kiểm tra update trong background, không block UI
+        // Kiểm tra update trong background – không block UI
         let Ok(updater) = app.updater() else { return };
         let Ok(Some(update)) = updater.check().await else { return };
 
-        // Có bản mới — hiện dialog xác nhận (tauri-plugin-dialog)
-        let version = update.version.clone();
-        let notes   = update.body.clone().unwrap_or_default();
-        let message = format!("Version {version} is available.\n\n{notes}\n\nInstall now?");
+        let version = js_escape(&update.version);
+        let repo    = "https://github.com/dqphong0302/mitm-antigravity/releases/latest";
 
-        if tauri_plugin_dialog::blocking::ask(Some(&app), "Update Available", &message) {
-            let _ = update.download_and_install(|_chunk, _total| {}, || {}).await;
-            app.restart();
+        // Inject banner vào GUI – không cần plugin dialog
+        // Người dùng tự click "Download" để tải bản mới từ GitHub Releases.
+        if let Some(window) = app.get_webview_window("main") {
+            let script = format!(r#"(function(){{
+  if(document.getElementById('mitm-update-banner'))return;
+  var b=document.createElement('div');
+  b.id='mitm-update-banner';
+  b.style='position:fixed;top:0;left:0;right:0;z-index:99999;background:#0ea5e9;color:#fff;padding:8px 16px;display:flex;align-items:center;justify-content:space-between;font-size:13px;font-family:system-ui;box-shadow:0 2px 8px rgba(0,0,0,.25);';
+  b.innerHTML='<span>📦 MITM AG <strong>`{version}`</strong> is available.</span>'
+    +'<span><a href="`{repo}`" target="_blank" style="color:#fff;font-weight:700;margin-right:12px;">Download</a>'
+    +'<button onclick="this.closest(\'#mitm-update-banner\').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;padding:3px 10px;cursor:pointer;border-radius:4px;">✕</button></span>';
+  document.body.prepend(b);
+}})();"#);
+            let _ = window.eval(&script);
         }
     });
 }
@@ -132,7 +147,6 @@ fn check_for_updates(app: tauri::AppHandle) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let backend = if is_mitm_gui_server() {
                 BackendProcess(Arc::new(Mutex::new(None)))

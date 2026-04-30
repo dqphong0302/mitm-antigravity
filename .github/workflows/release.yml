@@ -111,9 +111,9 @@ jobs:
           path: src-tauri/target/release/bundle/
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JOB 3 – Linux  (x64 + arm64 pkg;  CLI binary only – no Tauri desktop)
+# JOB 3a – Linux x64  (native runner)
 # ─────────────────────────────────────────────────────────────────────────────
-  build-linux:
+  build-linux-x64:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -125,28 +125,46 @@ jobs:
 
       - run: npm ci
 
-      # ── pkg CLI binaries (Linux x64 + arm64) ──────────────────────────────
-      - name: Build pkg – Linux
-        run: npm run build:pkg:linux
+      - name: Build pkg – Linux x64
+        run: npx pkg . --targets node20-linux-x64 --out-path dist
 
-      # ── Upload artifacts ───────────────────────────────────────────────────
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-pkg
-          path: |
-            dist/mitm-antigravity-linux-x64
-            dist/mitm-antigravity-linux-arm64
+          name: linux-x64-pkg
+          path: dist/mitm-antigravity-linux-x64
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 3b – Linux arm64  (native arm64 runner)
+# ─────────────────────────────────────────────────────────────────────────────
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build pkg – Linux arm64
+        run: npx pkg . --targets node20-linux-arm64 --out-path dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-pkg
+          path: dist/mitm-antigravity-linux-arm64
 
 # ─────────────────────────────────────────────────────────────────────────────
 # JOB 4 – Tạo GitHub Release và upload tất cả artifacts
 # ─────────────────────────────────────────────────────────────────────────────
   release:
-    needs: [build-macos, build-windows, build-linux]
+    needs: [build-macos, build-windows, build-linux-x64, build-linux-arm64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Gom tất cả artifacts vào thư mục release-artifacts/
       - uses: actions/download-artifact@v4
         with:
           path: release-artifacts
@@ -154,7 +172,6 @@ jobs:
       - name: List artifacts
         run: find release-artifacts -type f | sort
 
-      # Tạo GitHub Release với release notes tự động
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -165,8 +182,8 @@ jobs:
             release-artifacts/macos-pkg/mitm-antigravity-macos-x64
             release-artifacts/windows-pkg/mitm-antigravity-win-x64.exe
             release-artifacts/windows-pkg/mitm-antigravity-win-arm64.exe
-            release-artifacts/linux-pkg/mitm-antigravity-linux-x64
-            release-artifacts/linux-pkg/mitm-antigravity-linux-arm64
+            release-artifacts/linux-x64-pkg/mitm-antigravity-linux-x64
+            release-artifacts/linux-arm64-pkg/mitm-antigravity-linux-arm64
             release-artifacts/macos-tauri-arm64/**/*.dmg
             release-artifacts/macos-tauri-arm64/**/*.app.tar.gz
             release-artifacts/macos-tauri-x64/**/*.dmg
