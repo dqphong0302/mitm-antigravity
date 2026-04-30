@@ -247,6 +247,17 @@ function guiHtml() {
         </section>
 
         <section class="tab-panel" data-panel="settings">
+          <!-- Linux info banner – hiện khi chạy trên Linux -->
+          <section class="panel" id="linuxInfoPanel" style="display:none;">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title" data-i18n="settings.linuxTitle">Linux Notice</h2>
+              </div>
+            </div>
+            <div id="linuxInfoText" class="status warn" style="display:flex;" data-i18n="settings.linuxDesc">
+              On Linux, certificate trust and DNS changes require administrator access. Run the app with sudo, or use the CLI with the --password flag. Certificate auto-install is not supported on Linux.
+            </div>
+          </section>
           <section class="panel">
             <div class="panel-header">
               <h2 class="panel-title" data-i18n="settings.title">Preferences</h2>

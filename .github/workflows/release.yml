@@ -1,0 +1,176 @@
+name: Release
+
+# Trigger: push tag vX.Y.Z  →  tạo GitHub Release với binaries đầy đủ
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 1 – macOS  (arm64 + x64 pkg  +  Tauri .dmg cho cả hai arch)
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  build-macos:
+    runs-on: macos-latest          # M-series runner (arm64)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install Rust (stable + x86_64 target for cross-build)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - run: npm ci
+
+      # ── pkg CLI binaries (macOS arm64 + x64) ──────────────────────────────
+      - name: Build pkg – macOS
+        run: npm run build:pkg:macos
+
+      # ── Tauri .app / .dmg – arm64 ─────────────────────────────────────────
+      - name: Tauri build – macOS arm64
+        run: npx tauri build --target aarch64-apple-darwin
+        env:
+          CARGO_BUILD_TARGET: aarch64-apple-darwin
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # ── Tauri .app / .dmg – x64 ───────────────────────────────────────────
+      - name: Tauri build – macOS x64
+        run: npx tauri build --target x86_64-apple-darwin
+        env:
+          CARGO_BUILD_TARGET: x86_64-apple-darwin
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # ── Upload artifacts ───────────────────────────────────────────────────
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-pkg
+          path: |
+            dist/mitm-antigravity-macos-arm64
+            dist/mitm-antigravity-macos-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-tauri-arm64
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-tauri-x64
+          path: src-tauri/target/x86_64-apple-darwin/release/bundle/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 2 – Windows  (x64 + arm64 pkg  +  Tauri NSIS installer x64)
+# ─────────────────────────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - run: npm ci
+
+      # ── pkg CLI binaries (Windows x64 + arm64) ────────────────────────────
+      - name: Build pkg – Windows
+        run: npm run build:pkg:windows
+
+      # ── Tauri NSIS installer – x64 ────────────────────────────────────────
+      - name: Tauri build – Windows x64
+        run: npx tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # ── Upload artifacts ───────────────────────────────────────────────────
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-pkg
+          path: |
+            dist/mitm-antigravity-win-x64.exe
+            dist/mitm-antigravity-win-arm64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-tauri
+          path: src-tauri/target/release/bundle/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 3 – Linux  (x64 + arm64 pkg;  CLI binary only – no Tauri desktop)
+# ─────────────────────────────────────────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      # ── pkg CLI binaries (Linux x64 + arm64) ──────────────────────────────
+      - name: Build pkg – Linux
+        run: npm run build:pkg:linux
+
+      # ── Upload artifacts ───────────────────────────────────────────────────
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-pkg
+          path: |
+            dist/mitm-antigravity-linux-x64
+            dist/mitm-antigravity-linux-arm64
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 4 – Tạo GitHub Release và upload tất cả artifacts
+# ─────────────────────────────────────────────────────────────────────────────
+  release:
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gom tất cả artifacts vào thư mục release-artifacts/
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: List artifacts
+        run: find release-artifacts -type f | sort
+
+      # Tạo GitHub Release với release notes tự động
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          generate_release_notes: true
+          files: |
+            release-artifacts/macos-pkg/mitm-antigravity-macos-arm64
+            release-artifacts/macos-pkg/mitm-antigravity-macos-x64
+            release-artifacts/windows-pkg/mitm-antigravity-win-x64.exe
+            release-artifacts/windows-pkg/mitm-antigravity-win-arm64.exe
+            release-artifacts/linux-pkg/mitm-antigravity-linux-x64
+            release-artifacts/linux-pkg/mitm-antigravity-linux-arm64
+            release-artifacts/macos-tauri-arm64/**/*.dmg
+            release-artifacts/macos-tauri-arm64/**/*.app.tar.gz
+            release-artifacts/macos-tauri-x64/**/*.dmg
+            release-artifacts/macos-tauri-x64/**/*.app.tar.gz
+            release-artifacts/windows-tauri/**/*.exe
+            release-artifacts/windows-tauri/**/*.msi
+            release-artifacts/windows-tauri/**/*.nsis.zip

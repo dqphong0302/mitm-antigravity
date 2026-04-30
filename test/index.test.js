@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
@@ -321,6 +322,46 @@ test("logging helpers expose backend and proxy logs", () => {
   assert.match(logs.proxy, /proxy started/);
 });
 
+test("generateCert creates a CA-backed server certificate", async () => {
+  const cert = await mitm.generateCert(mitm.DEFAULT_TARGET_HOSTS, { force: true });
+  const ca = new crypto.X509Certificate(fs.readFileSync(cert.ca));
+  const server = new crypto.X509Certificate(fs.readFileSync(cert.cert));
+
+  assert.equal(ca.ca, true);
+  assert.equal(server.ca, false);
+  assert.equal(server.checkHost(mitm.DEFAULT_TARGET), mitm.DEFAULT_TARGET);
+  assert.equal(server.checkIssued(ca), true);
+  assert.equal(server.verify(ca.publicKey), true);
+  assert.equal(mitm.certUsesLocalCA(cert.cert, cert.ca), true);
+});
+
+test("release settings sanitizer strips secrets without mutating input", () => {
+  const { stripReleaseSettings } = require("../scripts/settings-sanitizer");
+  const input = {
+    routerUrl: "https://api.example.com/v1/chat/completions",
+    apiKey: "sk-secret",
+    modelMap: { "gemini-3-flash": "router/model" },
+    machines: {
+      dev: {
+        routerUrl: "https://machine.example.com/v1/chat/completions",
+        apiKey: "sk-machine-secret",
+        model: "router/model",
+        modelMap: { "gemini-3-flash": "router/model" },
+      },
+    },
+  };
+
+  const output = stripReleaseSettings(input);
+
+  assert.equal(output.apiKey, "");
+  assert.equal(output.routerUrl, "");
+  assert.deepEqual(output.modelMap, {});
+  assert.equal(output.machines.dev.apiKey, "");
+  assert.deepEqual(output.machines.dev.modelMap, {});
+  assert.equal(input.apiKey, "sk-secret");
+  assert.equal(input.machines.dev.apiKey, "sk-machine-secret");
+});
+
 test("compact proxy logger redacts and shortens values", () => {
   const compact = mitm.compactValue("Bearer sk-super-secret-token user@example.com ".repeat(8));
 
@@ -429,12 +470,14 @@ test("GUI route table finds known routes and rejects unknown routes", () => {
     handleImportConfig() { },
     handleCheckKey() { },
     handleStartProxy() { },
+    handleStartProxyOnly() { },
     handleStopProxy() { },
     handleStopAndCleanup() { },
     handleReloadProxy() { },
     handleApplyDns() { },
     handleApplyAppTrust() { },
     handleRemoveDns() { },
+    handleUninstallCert() { },
     handleAutoStartStatus() { },
     handleEnableAutoStart() { },
     handleDisableAutoStart() { },
@@ -520,4 +563,62 @@ test("proxy can start on an unprivileged port and stopProxyByPort stops it", asy
   } finally {
     if (!child.killed) child.kill("SIGTERM");
   }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// IPv6 DNS blocking
+// ────────────────────────────────────────────────────────────────────────────
+
+test("isLoopbackIp identifies loopback variants", () => {
+  assert.equal(mitm.isLoopbackIp("127.0.0.1"), true);
+  assert.equal(mitm.isLoopbackIp("::1"),       true);
+  assert.equal(mitm.isLoopbackIp("0.0.0.0"),   true);
+  assert.equal(mitm.isLoopbackIp("1.2.3.4"),   false);
+  assert.equal(mitm.isLoopbackIp(""),           false);
+  assert.equal(mitm.isLoopbackIp(undefined),    false);
+});
+
+test("dnsEntriesForHosts includes ::1 entry for each host when ip is loopback", () => {
+  const hosts = ["cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com"];
+  const entries = mitm.dnsEntriesForHosts(hosts, "127.0.0.1");
+
+  const v4 = entries.filter((e) => e.ip === "127.0.0.1").map((e) => e.targetHost);
+  const v6 = entries.filter((e) => e.ip === "::1").map((e) => e.targetHost);
+
+  assert.deepEqual(v4.sort(), hosts.slice().sort(), "should have IPv4 entries for all hosts");
+  assert.deepEqual(v6.sort(), hosts.slice().sort(), "should have IPv6 entries for all hosts");
+  assert.equal(entries.length, hosts.length * 2, "should have 2x entries (v4 + v6)");
+});
+
+test("dnsEntriesForHosts does not add ::1 when ip is a real remote IP", () => {
+  const hosts = ["cloudcode-pa.googleapis.com"];
+  const entries = mitm.dnsEntriesForHosts(hosts, "142.250.80.10");
+
+  assert.equal(entries.length, 1, "only IPv4 entry for non-loopback redirect");
+  assert.equal(entries[0].ip, "142.250.80.10");
+});
+
+test("addDNSEntries writes both IPv4 and IPv6 loopback entries to hosts file", async () => {
+  fs.writeFileSync(hostsPath, "127.0.0.1 localhost\n");
+
+  const targetHosts = ["cloudcode-pa.googleapis.com"];
+  await mitm.addDNSEntries({ targetHosts, remoteIp: "127.0.0.1" });
+
+  const content = fs.readFileSync(hostsPath, "utf8");
+  assert.match(content, /127\.0\.0\.1 cloudcode-pa\.googleapis\.com/,  "IPv4 entry should be present");
+  assert.match(content, /::1 cloudcode-pa\.googleapis\.com/,            "IPv6 entry should be present");
+});
+
+test("removeDNSEntries clears both IPv4 and IPv6 loopback entries", async () => {
+  fs.writeFileSync(hostsPath, "127.0.0.1 localhost\n");
+
+  const targetHosts = ["cloudcode-pa.googleapis.com"];
+  await mitm.addDNSEntries({ targetHosts, remoteIp: "127.0.0.1" });
+
+  await mitm.removeDNSEntries({ targetHosts });
+  const content = fs.readFileSync(hostsPath, "utf8");
+
+  assert.doesNotMatch(content, /cloudcode-pa\.googleapis\.com/,
+    "all entries (v4 + v6) should be removed after cleanup");
+  assert.equal(content, "127.0.0.1 localhost\n", "hosts file should be restored to original");
 });

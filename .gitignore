@@ -3,6 +3,12 @@ dist/
 settings.json
 *.log
 .DS_Store
+.pytest_cache/
 gui_current_state.png
 src-tauri/target/
-src-tauri/resources/
+src-tauri/resources/*
+!src-tauri/resources/.gitkeep
+
+# Tauri signing keys – KHÔNG bao giờ commit private key lên git
+tauri-signing.key
+tauri-signing.key.pub

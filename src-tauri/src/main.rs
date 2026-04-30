@@ -1,6 +1,8 @@
 use std::{
     env,
     fs::OpenOptions,
+    io::{Read, Write},
+    net::TcpStream,
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
@@ -9,7 +11,9 @@ use std::{
 };
 
 use tauri::Manager;
+use tauri_plugin_updater::UpdaterExt;
 
+const GUI_ADDR: &str = "127.0.0.1:20245";
 const GUI_URL: &str = "http://127.0.0.1:20245/";
 
 struct BackendProcess(Arc<Mutex<Option<Child>>>);
@@ -36,48 +40,6 @@ fn backend_resource_name() -> &'static str {
         "mitm-ag-backend.exe"
     } else {
         "mitm-ag-backend"
-    }
-}
-
-fn cleanup_stale_backend_port() {
-    let _ = std::net::TcpStream::connect("127.0.0.1:20245").map(|stream| drop(stream));
-
-    #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("/bin/sh")
-            .arg("-c")
-            .arg("lsof -ti tcp:20245 | xargs kill 2>/dev/null || true")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        thread::sleep(Duration::from_millis(350));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let _ = Command::new("/bin/sh")
-            .arg("-c")
-            .arg("fuser -k 20245/tcp 2>/dev/null || true")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        thread::sleep(Duration::from_millis(350));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let _ = Command::new("cmd")
-            .args([
-                "/C",
-                "for /f \"tokens=5\" %a in ('netstat -ano ^| findstr :20245') do taskkill /PID %a /F",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        thread::sleep(Duration::from_millis(350));
     }
 }
 
@@ -115,10 +77,33 @@ fn start_backend(app: &tauri::App) -> Result<BackendProcess, String> {
     Ok(BackendProcess(Arc::new(Mutex::new(Some(child)))))
 }
 
+fn read_gui_probe() -> Option<String> {
+    let mut stream = TcpStream::connect(GUI_ADDR).ok()?;
+    let timeout = Some(Duration::from_millis(350));
+    let _ = stream.set_read_timeout(timeout);
+    let _ = stream.set_write_timeout(timeout);
+    stream
+        .write_all(
+            b"GET /api/bootstrap HTTP/1.1\r\nHost: 127.0.0.1:20245\r\nConnection: close\r\n\r\n",
+        )
+        .ok()?;
+
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).ok()?;
+    Some(String::from_utf8_lossy(&response).into_owned())
+}
+
+fn is_mitm_gui_server() -> bool {
+    read_gui_probe().is_some_and(|response| {
+        response.starts_with("HTTP/1.1 200")
+            && response.contains("\"antigravityAliases\"")
+            && response.contains("\"settingsPath\"")
+    })
+}
+
 fn wait_for_gui() -> bool {
     for _ in 0..80 {
-        if let Ok(response) = std::net::TcpStream::connect("127.0.0.1:20245") {
-            drop(response);
+        if is_mitm_gui_server() {
             return true;
         }
         thread::sleep(Duration::from_millis(125));
@@ -126,12 +111,39 @@ fn wait_for_gui() -> bool {
     false
 }
 
+fn check_for_updates(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        // Kiểm tra update trong background, không block UI
+        let Ok(updater) = app.updater() else { return };
+        let Ok(Some(update)) = updater.check().await else { return };
+
+        // Có bản mới — hiện dialog xác nhận (tauri-plugin-dialog)
+        let version = update.version.clone();
+        let notes   = update.body.clone().unwrap_or_default();
+        let message = format!("Version {version} is available.\n\n{notes}\n\nInstall now?");
+
+        if tauri_plugin_dialog::blocking::ask(Some(&app), "Update Available", &message) {
+            let _ = update.download_and_install(|_chunk, _total| {}, || {}).await;
+            app.restart();
+        }
+    });
+}
+
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            cleanup_stale_backend_port();
-            let backend = start_backend(app)?;
+            let backend = if is_mitm_gui_server() {
+                BackendProcess(Arc::new(Mutex::new(None)))
+            } else {
+                start_backend(app)?
+            };
             app.manage(backend);
+
+            // Kiểm tra update sau khi window load xong (fire-and-forget)
+            check_for_updates(app.handle().clone());
+
             if let Some(window) = app.get_webview_window("main") {
                 if wait_for_gui() {
                     let _ = window.eval(&format!("window.location.replace('{}')", GUI_URL));
@@ -140,7 +152,7 @@ fn main() {
                         .to_string_lossy()
                         .replace('\\', "\\\\")
                         .replace('\'', "\\'");
-                    let _ = window.eval(&format!("document.body.innerHTML = '<main style=\"font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:28px;color:#f8fafc;background:#111827;min-height:100vh\"><h1>Backend did not start</h1><p>Close and reopen MITM AG, or inspect the backend log:</p><pre style=\"white-space:pre-wrap;word-break:break-all;background:#020617;border:1px solid #334155;border-radius:8px;padding:12px\">{}</pre></main>'", log_path));
+                    let _ = window.eval(&format!("document.body.innerHTML = '<main style=\"font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:28px;color:#f8fafc;background:#111827;min-height:100vh\"><h1>Backend did not start</h1><p>Close and reopen MITM AG, ensure port 20245 is free, or inspect the backend log:</p><pre style=\"white-space:pre-wrap;word-break:break-all;background:#020617;border:1px solid #334155;border-radius:8px;padding:12px\">{}</pre></main>'", log_path));
                 }
             }
             Ok(())
@@ -150,6 +162,23 @@ fn main() {
                 if let Some(state) = window.try_state::<BackendProcess>() {
                     if let Ok(mut child) = state.0.lock() {
                         if let Some(mut process) = child.take() {
+                            // Trên Unix: gửi SIGTERM trước để backend Node.js đóng graceful
+                            // (đóng HTTP server qua signal handler), rồi mới SIGKILL nếu cần.
+                            #[cfg(unix)]
+                            {
+                                let pid = process.id();
+                                let _ = Command::new("kill")
+                                    .args(["-TERM", &pid.to_string()])
+                                    .status();
+                                // Chờ tối đa 2 giây để process thoát sạch
+                                for _ in 0..20 {
+                                    thread::sleep(Duration::from_millis(100));
+                                    if let Ok(Some(_)) = process.try_wait() {
+                                        return;
+                                    }
+                                }
+                            }
+                            // Fallback: force kill (cũng là đường duy nhất trên Windows)
                             let _ = process.kill();
                             let _ = process.wait();
                         }

@@ -13,7 +13,8 @@ function guiClientScript() {
       theme: localStorage.getItem(STORAGE_THEME) || "system",
       lang: localStorage.getItem(STORAGE_LANG) || "en",
       status: null,
-      doctor: null
+      doctor: null,
+      platform: { isWin: false, isMac: false, isLinux: false, needsSudoPassword: false },
     };
     const $ = (id) => document.getElementById(id);
 
@@ -258,10 +259,18 @@ function guiClientScript() {
       });
     }
 
+    // Body cho các action cần elevated privileges.
+    // Sudo password KHÔNG được nhập trong app – OS tự xử lý qua dialog riêng
+    // (osascript trên macOS, UAC trên Windows).
+    function elevatedBody(extra) {
+      return JSON.stringify(extra || {});
+    }
+
     async function load() {
       const data = await api("/api/bootstrap");
       state.config = data.config;
       state.builtInAliases = data.antigravityAliases || [];
+      state.platform = data.platform || state.platform;
       if (data.cachedModels && data.cachedModels.length > 0 && state.models.length === 0) {
         state.models = data.cachedModels;
       }
@@ -274,6 +283,9 @@ function guiClientScript() {
       $("apiKey").value = state.config.apiKey || "";
       $("model").value = state.config.model || "";
       $("passthroughUnmapped").checked = state.config.alwaysIntercept !== true;
+      // Hiện Linux info banner nếu đang chạy trên Linux
+      const linuxPanel = $("linuxInfoPanel");
+      if (linuxPanel) linuxPanel.style.display = state.platform.isLinux ? "" : "none";
       renderMappings();
       applyLanguage({ skipStatus: true });
       loadStatus();
@@ -333,7 +345,7 @@ function guiClientScript() {
       setSystemButtons(true);
       showStatus("systemStatus", t("message.starting"), "loading");
       try {
-        const result = await api("/api/start-proxy", { method: "POST", body: JSON.stringify({}) });
+        const result = await api("/api/start-proxy", { method: "POST", body: elevatedBody() });
         showStatus("systemStatus", summarizeProxyStart(result), "ok");
         loadStatus();
       } catch (error) {
@@ -347,7 +359,7 @@ function guiClientScript() {
       setSystemButtons(true);
       showStatus("systemStatus", t("message.startingProxyOnly"), "loading");
       try {
-        const result = await api("/api/start-proxy-only", { method: "POST", body: JSON.stringify({}) });
+        const result = await api("/api/start-proxy-only", { method: "POST", body: elevatedBody() });
         showStatus("systemStatus", result.restarted ? t("message.proxyRestarted") : (result.alreadyRunning ? t("message.proxyAlreadyRunning") : t("message.proxyStarted")), "ok");
         loadStatus();
       } catch (error) {
@@ -361,7 +373,7 @@ function guiClientScript() {
       setSystemButtons(true);
       showStatus("systemStatus", t("message.stopping"), "loading");
       try {
-        const result = await api("/api/stop-proxy", { method: "POST", body: JSON.stringify({}) });
+        const result = await api("/api/stop-proxy", { method: "POST", body: elevatedBody() });
         showStatus("systemStatus", result.stopped ? t("message.proxyStopped") : t("message.proxyWasNotRunning"), "ok");
         loadStatus();
       } catch (error) {
@@ -381,13 +393,17 @@ function guiClientScript() {
       setSystemButtons(true);
       showStatus("systemStatus", t("message.applyingDns"), "loading");
       try {
-        const result = await api("/api/apply-dns", { method: "POST", body: JSON.stringify({}) });
+        const result = await api("/api/apply-dns", { method: "POST", body: elevatedBody() });
         const parts = [
           result.dns && result.dns.added ? t("message.dnsAdded") : t("message.dnsAlreadyActive"),
           result.cert && result.cert.installed ? t("message.certTrusted") : t("message.certAlreadyTrusted")
         ];
         if (result.nodeTrust && result.nodeTrust.applied) parts.push(t("message.nodeTrustActive"));
-        showStatus("systemStatus", parts.join(", "), "ok");
+        if (result.proxy && result.proxy.reloaded) parts.push(t("message.proxyReloaded"));
+        let restartText = "";
+        if (result.nodeTrust && result.nodeTrust.antigravityRunning) restartText = " " + t("message.restartAntigravityRunning");
+        else if (result.nodeTrust && result.nodeTrust.restartRequired) restartText = " " + t("message.restartAntigravity");
+        showStatus("systemStatus", parts.join(", ") + "." + restartText, "ok");
         loadStatus();
       } catch (error) {
         showStatus("systemStatus", t("error.prefix", { message: error.message }), "err");
@@ -400,7 +416,7 @@ function guiClientScript() {
       setSystemButtons(true);
       showStatus("systemStatus", t("message.removingDns"), "loading");
       try {
-        const result = await api("/api/remove-dns", { method: "POST", body: JSON.stringify({}) });
+        const result = await api("/api/remove-dns", { method: "POST", body: elevatedBody() });
         showStatus("systemStatus", result.dns.removed ? t("message.dnsRemoved") : t("message.dnsWasNotActive"), "ok");
         loadStatus();
       } catch (error) {
@@ -414,7 +430,7 @@ function guiClientScript() {
       setSystemButtons(true);
       showStatus("systemStatus", t("message.stopCleanup"), "loading");
       try {
-        const result = await api("/api/stop-and-cleanup", { method: "POST", body: JSON.stringify({}) });
+        const result = await api("/api/stop-and-cleanup", { method: "POST", body: elevatedBody() });
         const stopText = result.stop && result.stop.stopped ? t("message.proxyStopped") : t("message.proxyWasNotRunning");
         const dnsText = result.dns && result.dns.removed ? t("message.dnsRemoved") : t("message.dnsWasNotActive");
         showStatus("systemStatus", t("message.stopCleanupDone", { stop: stopText, dns: dnsText }), "ok");
@@ -459,7 +475,7 @@ function guiClientScript() {
       setSystemButtons(true);
       showStatus("teardownStatus", t("message.uninstallingCert"), "loading");
       try {
-        const result = await api("/api/uninstall-cert", { method: "POST", body: JSON.stringify({}) });
+        const result = await api("/api/uninstall-cert", { method: "POST", body: elevatedBody() });
         showStatus("teardownStatus", result.cert && result.cert.removed ? t("message.certRemoved") : t("message.certWasNotInstalled"), "ok");
         loadStatus();
       } catch (error) {

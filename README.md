@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img alt="Node.js 18+" src="https://img.shields.io/badge/Node.js-18%2B-3c873a?style=flat-square">
+  <img alt="Node.js 20+" src="https://img.shields.io/badge/Node.js-20%2B-3c873a?style=flat-square">
   <img alt="Tauri" src="https://img.shields.io/badge/Desktop-Tauri-24c8db?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey?style=flat-square">
   <img alt="Status" src="https://img.shields.io/badge/Status-Local--first-7c3aed?style=flat-square">
@@ -53,7 +53,7 @@ Use it as either:
 - 📦 **Import/export configuration** as portable JSON.
 - 🧪 **Doctor diagnostics** for readiness checks and actionable troubleshooting.
 - 🔐 **Secret-aware logging** with redaction for common sensitive values.
-- 🛠️ **Cross-platform builds** via `pkg` and Tauri.
+- 🛠️ **Cross-platform builds** via `@yao-pkg/pkg` and Tauri.
 
 ---
 
@@ -61,7 +61,7 @@ Use it as either:
 
 | Use case | Requirements |
 | --- | --- |
-| Source development | Node.js 18+, npm |
+| Source development | Node.js 20+, npm |
 | Desktop build | Rust toolchain + Tauri prerequisites |
 | System setup | Administrator privileges for certificate and hosts/DNS changes |
 | Release binary | Matching platform build, no Node.js required |
@@ -116,6 +116,10 @@ Open **Proxy & System**:
 
 The GUI does **not** store your administrator password. Your OS will prompt for
 elevation when needed.
+
+On macOS, setup installs a local root CA and applies `NODE_EXTRA_CA_CERTS` for
+Antigravity. Fully quit and reopen Antigravity after applying setup so the app
+inherits the updated trust environment.
 
 ---
 
@@ -327,7 +331,7 @@ Useful options:
 
 ### CLI/backend binaries
 
-Build macOS arm64, macOS x64, and Windows x64 binaries:
+Build binaries for all supported platforms:
 
 ```bash
 npm run build:pkg
@@ -339,10 +343,13 @@ Output:
 dist/mitm-antigravity-macos-arm64
 dist/mitm-antigravity-macos-x64
 dist/mitm-antigravity-win-x64.exe
+dist/mitm-antigravity-win-arm64.exe
+dist/mitm-antigravity-linux-x64
+dist/mitm-antigravity-linux-arm64
 dist/settings.json
 ```
 
-`dist/settings.json` is a stripped release settings file by default.
+`dist/settings.json` is a stripped release settings file (no API keys or model mappings).
 
 ### Tauri desktop app
 
@@ -365,23 +372,54 @@ in a dedicated CI/cross-build environment.
 
 ## Project Structure
 
-| Path | Purpose |
-| --- | --- |
-| `index.js` | CLI entrypoint. |
-| `src/cli.js` | Command parsing and dispatch. |
-| `src/config.js` | Runtime settings, import/export, machine profiles. |
-| `src/proxy.js` | Main HTTPS proxy and request routing. |
-| `src/proxy-helpers.js` | URL checks, passthrough handling, retry helpers. |
-| `src/proxy-logger.js` | Compact proxy event logging. |
-| `src/proxy-control.js` | Start/stop/health-check helpers. |
-| `src/models.js` | Model alias and mapping logic. |
-| `src/cert.js` | Certificate generation and trust store integration. |
-| `src/dns.js` | Hosts/DNS redirect management. |
-| `src/gui.js` | Local GUI server. |
-| `src/gui/` | GUI template, CSS, client logic, routes, i18n. |
-| `src-tauri/` | Tauri desktop app wrapper. |
-| `tauri-ui/` | Static frontend used by Tauri builds. |
-| `test/` | Node.js test suite. |
+```
+mitm-antigravity/
+├── index.js                  CLI entrypoint
+├── src/
+│   ├── index.js              Public re-export hub (used by tests)
+│   ├── cli/
+│   │   ├── args.js           --flag parser
+│   │   ├── commands.js       Command dispatch (start/stop/gui/wizard…)
+│   │   └── wizard.js         Interactive setup wizard
+│   ├── config/
+│   │   ├── constants.js      App-wide constants (aliases, loopback IPs…)
+│   │   └── index.js          Config read/write/merge (settings.json)
+│   ├── cert/
+│   │   └── index.js          TLS CA + server cert, system keychain trust
+│   ├── dns/
+│   │   └── index.js          /etc/hosts management (IPv4 + IPv6 blocking)
+│   ├── proxy/
+│   │   ├── index.js          HTTPS proxy server, intercept/passthrough
+│   │   ├── control.js        Start/stop/health-check, LaunchDaemon
+│   │   ├── helpers.js        Routing logic, retry, header building
+│   │   └── logger.js         Compact log formatters (MAP/OK/ERR/RETRY)
+│   ├── models/
+│   │   ├── index.js          Model mapping, extraction, alias resolution
+│   │   ├── list.js           Antigravity model list builder
+│   │   └── serialization.js  Response decode/summarize
+│   ├── system/
+│   │   ├── index.js          exec, execWithSudo, execPowerShell, openBrowser
+│   │   ├── autostart.js      LaunchAgent / Scheduled Task / systemd
+│   │   ├── http.js           collectBodyRaw, sendJson
+│   │   └── logging.js        appendLog, readRecentLogs, redactText
+│   └── gui/
+│       ├── index.js          GUI HTTP server + route handlers
+│       ├── routes.js         Route table
+│       ├── api-utils.js      sendHtml, sendApiError
+│       ├── client.js         Browser JS (rendered inline)
+│       ├── i18n.js           EN / VI translations
+│       ├── styles.js         CSS (rendered inline)
+│       └── template.js       HTML template
+├── src-tauri/                Tauri 2 desktop app shell (Rust)
+├── tauri-ui/                 Loading screen shown before GUI is ready
+├── scripts/                  Build helpers (pkg, Tauri prep, settings sanitizer)
+└── test/                     Node.js built-in test suite
+```
+
+> [!NOTE]
+> The flat `src/*.js` files (`src/proxy.js`, `src/config.js`, etc.) are thin shims
+> that re-export from their new subdirectory locations for backward compatibility.
+> All active source code lives in the subdirectories above.
 
 ---
 
@@ -409,12 +447,15 @@ npm run tauri:dev
 
 ## Safety
 
-- Setup installs a local TLS certificate.
-- Hosts redirection affects configured target hosts system-wide.
+- Setup installs a local root CA and generates a per-host TLS server certificate.
+- Hosts redirection affects configured target hosts system-wide (IPv4 **and** IPv6).
 - Only selected generation endpoints are intercepted; other paths pass through.
 - If Antigravity or the runtime uses certificate pinning, interception may fail.
 - Do not commit local secrets, API keys, generated certificates, or private configs.
 - Review logs before sharing them publicly, even though common secrets are redacted.
+- **API key storage**: the API key is stored in plaintext in `~/.mitm-antigravity/settings.json`. This file is user-readable only (`0600`). Do not store highly sensitive keys without additional OS-level protection.
+- **Linux**: certificate auto-install is not supported. Trust the CA manually: `sudo cp ~/.mitm-antigravity/cert/ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates`. DNS and proxy start/stop operations require the app to be run with `sudo`, or use the CLI `--password` flag.
+- The GUI does **not** store or transmit your administrator password. Elevation is handled entirely by OS dialogs (osascript on macOS, UAC on Windows).
 
 To restore normal networking, stop the proxy and remove managed DNS entries:
 

@@ -21,7 +21,17 @@
             }
         ],
         "security": {
-            "csp": null
+            "csp": "default-src 'self'; connect-src http://127.0.0.1:20245; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+        }
+    },
+    "plugins": {
+        "updater": {
+            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ5QUQ2M0ZEQjFEMEEwMjMKUldRam9OQ3gvV090MmF5aXd3eXJoY1g5M0Ird293bDJZOU5lVGJuVWUxMHcwL2YrWEw1dURwa28K",
+            "endpoints": [
+                "https://github.com/dqphong0302/mitm-antigravity/releases/latest/download/latest.json"
+            ],
+            "dialog": true,
+            "installMode": "basicInstallMode"
         }
     },
     "bundle": {
@@ -30,8 +40,7 @@
             "app"
         ],
         "resources": [
-            "resources/mitm-ag-backend*",
-            "resources/settings.json"
+            "resources"
         ],
         "icon": [
             "icons/32x32.png",
@@ -43,6 +52,14 @@
         ],
         "macOS": {
             "minimumSystemVersion": "10.13"
+        },
+        "windows": {
+            "webviewInstallMode": {
+                "type": "embedBootstrapper"
+            },
+            "certificateThumbprint": null,
+            "digestAlgorithm": "sha256",
+            "timestampUrl": ""
         }
     }
 }
