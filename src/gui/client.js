@@ -133,9 +133,11 @@ function guiClientScript() {
         const alias = row.dataset.alias;
         const select = row.querySelector("select.model-select");
         const input = row.querySelector("input.upstream-model");
+        const reasoning = row.querySelector("select.reasoning-select");
         const value = select ? select.value.trim() : (input ? input.value.trim() : "");
+        const reasoningEffort = reasoning ? reasoning.value.trim() : "";
         if (alias && value) {
-          out[alias] = value;
+          out[alias] = reasoningEffort ? { model: value, reasoning_effort: reasoningEffort } : value;
         }
       });
       return out;
@@ -159,6 +161,26 @@ function guiClientScript() {
       return "<input class=\\"upstream-model\\" value=\\"" + esc(selected) + "\\" placeholder=\\"e.g. cx/gpt-5.5\\">";
     }
 
+    function mappingReasoningValue(entry) {
+      if (!entry || typeof entry !== "object") return "";
+      return entry.reasoning_effort || "";
+    }
+
+    function makeReasoningCell(selected) {
+      const values = ["", "low", "medium", "high", "xhigh"];
+      const labels = {
+        "": t("reasoning.default"),
+        low: "Low",
+        medium: "Medium",
+        high: "High",
+        xhigh: "XHigh"
+      };
+      const options = values.map((value) => {
+        return "<option value=\\"" + esc(value) + "\\"" + (value === selected ? " selected" : "") + ">" + esc(labels[value] || value) + "</option>";
+      }).join("");
+      return "<select class=\\"reasoning-select\\" aria-label=\\"Reasoning effort\\">" + options + "</select>";
+    }
+
 
     function renderMappings() {
       const map = (state.config && state.config.modelMap) || {};
@@ -178,7 +200,7 @@ function guiClientScript() {
           "<td class=\\"alias-cell\\">" + esc(alias) + "</td>" +
           "<td class=\\"arrow-cell\\">→</td>" +
           "<td class=\\"model-cell\\">" + makeModelCell(mappingModelValue(entry)) + "</td>" +
-
+          "<td class=\\"reasoning-cell\\">" + makeReasoningCell(mappingReasoningValue(entry)) + "</td>" +
           "<td class=\\"mapping-state\\"><span class=\\"tag " + (mapped ? "ok" : "neutral") + "\\">" + esc(mapped ? t("mapping.mapped") : t("mapping.unmapped")) + "</span></td>" +
         "</tr>";
       }).join("");
@@ -288,7 +310,8 @@ function guiClientScript() {
         state.models = result.models || [];
         const saved = await api("/api/config", { method: "PUT", body: JSON.stringify(form) });
         state.config = saved.config;
-        showStatus("endpointStatus", t("message.loadedModels", { count: state.models.length, url: result.modelsUrl }), "ok");
+        const reloadText = saved.proxy && saved.proxy.reloaded ? " " + t("message.proxyReloaded") + "." : "";
+        showStatus("endpointStatus", t("message.loadedModels", { count: state.models.length, url: result.modelsUrl }) + reloadText, "ok");
         renderMappings();
         loadStatus();
       } catch (error) {
@@ -306,7 +329,7 @@ function guiClientScript() {
         const result = await api("/api/config", { method: "PUT", body: JSON.stringify(readForm()) });
         state.config = result.config;
         renderMappings();
-        const reload = await api("/api/reload-proxy", { method: "POST", body: JSON.stringify({}) });
+        const reload = result.proxy || {};
         const reloadText = reload.reloaded ? t("message.proxyReloaded") : t("message.proxyNotRunning");
         showStatus("mappingStatus", t("message.mappingSaved", { reload: reloadText }), "ok");
         loadStatus();

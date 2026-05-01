@@ -195,6 +195,7 @@ function guiHtml() {
                     <th data-i18n="mapping.name">Antigravity model</th>
                     <th></th>
                     <th data-i18n="mapping.upstream">Upstream model</th>
+                    <th data-i18n="mapping.reasoning">Reasoning</th>
                     <th data-i18n="mapping.status">Status</th>
                   </tr>
                 </thead>

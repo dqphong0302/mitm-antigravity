@@ -1,6 +1,6 @@
 [package]
 name = "mitm-ag-tauri"
-version = "0.2.2"
+version = "0.2.3"
 description = "MITM AG native desktop shell"
 authors = ["MITM Antigravity"]
 edition = "2021"

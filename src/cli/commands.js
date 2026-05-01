@@ -394,6 +394,18 @@ async function main() {
   }
 
   const targetHosts = targetHostsFrom(options);
+
+  // Idempotent: nếu proxy đang chạy thì thoát sạch thay vì EADDRINUSE crash.
+  // Quan trọng khi AutoStart (Task Scheduler / LaunchAgent) fire mà proxy đã được chạy.
+  const alreadyRunning = await checkProxyHealth(
+    Number(options.port || 443),
+    primaryTargetHost(options)
+  );
+  if (alreadyRunning) {
+    console.log(`Proxy is already running on port ${options.port || 443}.`);
+    return;
+  }
+
   if (!options.skipSetup) {
     const cert = await generateCert(targetHosts, { force: options.forceCert, sudoPassword: options.sudoPassword });
     await installCert(cert.ca, targetHosts[0], options.sudoPassword);

@@ -63,6 +63,33 @@ test("classifyModelCheckFailure identifies common upstream failures", () => {
   assert.equal(mitm.classifyModelCheckFailure(null, { status: 524, message: "timeout" }).category, "upstream_transient");
 });
 
+test("reasoning helpers preserve xhigh effort without changing GPT 5.5 model", () => {
+  assert.equal(mitm.normalizeReasoningEffort("high", { preferXhigh: true }), "xhigh");
+  assert.equal(mitm.normalizeReasoningEffort("x-high", { preferXhigh: true }), "xhigh");
+  assert.equal(mitm.inferReasoningEffort({ thinkingLevel: "HIGH" }, false, { preferXhigh: true }), "xhigh");
+  assert.equal(mitm.inferReasoningEffort({ thinkingBudget: 12000 }, false, { preferXhigh: true }), "xhigh");
+  assert.equal(mitm.inferReasoningEffort(null, true, { preferXhigh: true }), "xhigh");
+});
+
+test("adaptiveGptModelForReasoning keeps GPT 5.5 on regular model", () => {
+  assert.equal(mitm.adaptiveGptModelForReasoning("gpt-5.5", "xhigh"), "gpt-5.5");
+  assert.equal(mitm.adaptiveGptModelForReasoning("cx/gpt-5.5", "high"), "cx/gpt-5.5");
+  assert.equal(mitm.adaptiveGptModelForReasoning("cx/gpt-5.5", "medium"), "cx/gpt-5.5");
+  assert.equal(mitm.adaptiveGptModelForReasoning("cx/gpt-5.5-xhigh", "xhigh"), "cx/gpt-5.5");
+});
+
+test("reasoning effort is only used for thinking requests", () => {
+  assert.equal(mitm.shouldUseReasoningEffort(null, false), false);
+  assert.equal(mitm.shouldUseReasoningEffort({ includeThoughts: true }, false), true);
+  assert.equal(mitm.shouldUseReasoningEffort(null, true), true);
+});
+
+test("stripInternalInstructionLeaks removes leaked internal instruction text", () => {
+  const leaked = "CRITICAL INSTRUCTION 1: use tool A; CRITICAL INSTRUCTION 2: use tool B; visible answer";
+  assert.equal(mitm.stripInternalInstructionLeaks(leaked), "visible answer");
+  assert.equal(mitm.isInternalInstructionLeak(leaked), true);
+});
+
 test("stripDnsEntriesFromHostsContent removes managed and exact host entries only", () => {
   const input = [
     "127.0.0.1 localhost",
@@ -384,6 +411,43 @@ test("Windows command-line args preserve paths with spaces", () => {
   );
 });
 
+test("Windows autostart task script uses highest privileges and normalized working directory", () => {
+  const script = mitm.windowsRegisterAutoStartScript([
+    "C:\\Program Files\\nodejs\\node.exe",
+    "C:\\Program Files\\MITM AG\\index.js",
+    "start",
+    "--skip-setup",
+  ]);
+
+  assert.match(script, /New-ScheduledTaskPrincipal/);
+  assert.match(script, /-RunLevel Highest/);
+  assert.match(script, /-LogonType Interactive/);
+  assert.match(script, /Register-ScheduledTask/);
+  assert.match(script, /MITM Antigravity Proxy/);
+  assert.doesNotMatch(script, /undefined/);
+});
+
+test("Windows autostart status script treats disabled scheduled task as disabled", () => {
+  const script = mitm.windowsAutoStartStatusScript();
+
+  assert.match(script, /Get-ScheduledTask/);
+  assert.match(script, /State\) -eq 'Disabled'|State -eq 'Disabled'/);
+  assert.match(script, /exit 2/);
+});
+
+test("macOS LaunchAgent commands use bootstrap domain instead of deprecated load", () => {
+  const plistPath = "/Users/test/Library/LaunchAgents/io.phongdang.mitm-antigravity.proxy.plist";
+  const bootstrap = mitm.macLaunchAgentBootstrapCommand(plistPath);
+  const bootout = mitm.macLaunchAgentBootoutCommand(plistPath);
+  const print = mitm.macLaunchAgentPrintCommand();
+
+  assert.match(bootstrap, /launchctl bootstrap 'gui\/\d+'/);
+  assert.match(bootout, /launchctl bootout 'gui\/\d+'/);
+  assert.match(print, /launchctl print 'gui\/\d+\/io\.phongdang\.mitm-antigravity\.proxy'/);
+  assert.doesNotMatch(bootstrap, /launchctl load/);
+  assert.doesNotMatch(bootout, /launchctl unload/);
+});
+
 test("release settings sanitizer strips secrets without mutating input", () => {
   const { stripReleaseSettings } = require("../scripts/settings-sanitizer");
   const input = {
@@ -450,13 +514,6 @@ test("chatCompletionsRouterUrl normalizes Responses endpoint back to chat endpoi
     mitm.chatCompletionsRouterUrl("https://router.example/v1"),
     "https://router.example/v1/chat/completions"
   );
-});
-
-test("modelWithReasoningSuffix applies Codex GPT reasoning suffixes", () => {
-  assert.equal(mitm.modelWithReasoningSuffix("cx/gpt-5.5", "xhigh"), "cx/gpt-5.5-xhigh");
-  assert.equal(mitm.modelWithReasoningSuffix("cx/gpt-5.3-codex-high", "xhigh"), "cx/gpt-5.3-codex-xhigh");
-  assert.equal(mitm.modelWithReasoningSuffix("gh/gpt-5.5", "xhigh"), "gh/gpt-5.5");
-  assert.equal(mitm.modelWithReasoningSuffix("cx/claude-sonnet-4-6", "xhigh"), "cx/claude-sonnet-4-6");
 });
 
 test("Responses API stream becomes Antigravity-safe Gemini SSE", async () => {

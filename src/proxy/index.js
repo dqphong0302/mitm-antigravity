@@ -42,7 +42,48 @@ function isGptResponsesModel(modelName) {
 }
 
 function isInternalInstructionLeak(text) {
-  return /^\s*CRITICAL INSTRUCTION\s+\d+:/i.test(String(text || ""));
+  return /(^|\n)\s*CRITICAL INSTRUCTION\s+\d+:/i.test(String(text || ""));
+}
+
+function stripInternalInstructionLeaks(text) {
+  return String(text || "")
+    .replace(/(^|[;\n]\s*)CRITICAL INSTRUCTION\s+\d+:.*?(?=;|\n\s*(?:data:|\{|\[DONE\])|$)/gis, "$1")
+    .replace(/;?\s*CRITICAL INSTRUCTION\s+\d+:.*?(?=;|$)/gis, "")
+    .replace(/^(?:\s*;\s*)+/, "")
+    .trimStart();
+}
+
+function normalizeReasoningEffort(value, options = {}) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (raw === "xhigh" || raw === "x-high" || raw === "extra-high" || raw === "extra_high") return "xhigh";
+  if (raw === "high") return options.preferXhigh ? "xhigh" : "high";
+  if (raw === "medium" || raw === "med") return "medium";
+  if (raw === "low") return "low";
+  return "";
+}
+
+function inferReasoningEffort(thinkingCfg, isThinkingModel, options = {}) {
+  const preferXhigh = options.preferXhigh !== false;
+  if (thinkingCfg) {
+    const budget = Number(thinkingCfg.thinkingBudget || 0);
+    const level  = String(thinkingCfg.thinkingLevel || "").toUpperCase();
+    if (level === "HIGH" || budget >= 10000) return preferXhigh ? "xhigh" : "high";
+    if (level === "MEDIUM" || budget >= 4000) return "medium";
+    if (level === "LOW"  || budget > 0) return "low";
+    if (thinkingCfg.includeThoughts) return "medium";
+  }
+  return isThinkingModel ? (preferXhigh ? "xhigh" : "high") : "";
+}
+
+function adaptiveGptModelForReasoning(modelName, reasoningEffort) {
+  const model = String(modelName || "").trim();
+  if (!model) return model;
+  return model.replace(/(^|[/@:+-])gpt-5\.5-xhigh$/i, "$1gpt-5.5");
+}
+
+function shouldUseReasoningEffort(thinkingCfg, isThinkingModel) {
+  return Boolean(thinkingCfg || isThinkingModel);
 }
 
 function thoughtPart(text) {
@@ -55,16 +96,6 @@ function chatCompletionsRouterUrl(routerUrl) {
   if (raw.endsWith("/chat/completions")) return raw;
   if (raw.endsWith("/responses")) return `${raw.slice(0, -"/responses".length)}/chat/completions`;
   return `${raw}/chat/completions`;
-}
-
-function modelWithReasoningSuffix(modelName, reasoningEffort) {
-  const model = String(modelName || "").trim();
-  const effort = String(reasoningEffort || "").trim().toLowerCase();
-  if (!model || !effort) return model;
-  if (!/^cx\/.*gpt/i.test(model)) return model;
-  if (!["none", "low", "medium", "high", "xhigh"].includes(effort)) return model;
-  const base = model.replace(/-(none|low|medium|high|xhigh)$/i, "");
-  return `${base}-${effort}`;
 }
 
 /**
@@ -115,13 +146,9 @@ function buildResponsesApiBody(geminiBody, reasoningEffort) {
     else if (content.length > 0) input.push({ role, content });
   }
 
-  // reasoning.effort: "xhigh" là giá trị GPT/9router cần để trigger reasoning.
-  // "high" hay "medium" KHÔNG trigger reasoning cho GPT Responses API qua 9router API key.
+  // Keep GPT 5.5 on the regular model. Do not auto-upgrade to gpt-5.5-xhigh.
   // reasoning.summary: "detailed" bắt buộc để nhận thinking text trong response.
-  const effort = reasoningEffort === "xhigh" ? "xhigh"
-    : reasoningEffort === "low"  ? "low"
-    : reasoningEffort === "medium" ? "medium"
-    : "xhigh"; // mặc định xhigh
+  const effort = normalizeReasoningEffort(reasoningEffort, { preferXhigh: true }) || "xhigh";
 
   const result = {
     model,
@@ -211,7 +238,7 @@ async function transformResponsesApiStream(responseBody, res) {
     // Buffer GPT Responses deltas into one Gemini chunk. Antigravity 1.107.0
     // can crash on empty/final-only chunks while consuming Gemini SSE. It also
     // expects an explicit stream sentinel on this internal Cloud Code path.
-    emitGeminiText(outputText || " ", "STOP");
+    emitGeminiText(stripInternalInstructionLeaks(outputText) || " ", "STOP");
     res.write("data: [DONE]\n\n");
   }
 
@@ -403,8 +430,6 @@ async function runProxy(options) {
       const originalModel = requestedModel || body.model || requestBody.model;
       if (mappedEntry && mappedEntry.model) body.model = mappedEntry.model;
       if (body.request && requestBody.contents && !body.userAgent) body.userAgent = "antigravity";
-      if (mappedEntry && mappedEntry.reasoning_effort) body.reasoning_effort = mappedEntry.reasoning_effort;
-      if (body.reasoning_effort) body.model = modelWithReasoningSuffix(body.model, body.reasoning_effort);
 
       // ─── Thinking / Reasoning passthrough ───────────────────────────────────
       // Antigravity gửi thinkingConfig theo Gemini API format; proxy phải map sang
@@ -420,26 +445,29 @@ async function runProxy(options) {
       const targetModelName = String(body.model || originalModel || "").toLowerCase();
       const isThinkingModel = targetModelName.endsWith("-thinking");
 
-      if (!body.reasoning_effort) {
-        if (thinkingCfg) {
-          // Map Gemini thinkingBudget / thinkingLevel → OpenAI reasoning_effort
-          const budget = Number(thinkingCfg.thinkingBudget || 0);
-          const level  = String(thinkingCfg.thinkingLevel || "").toUpperCase();
-          if (level === "HIGH" || budget >= 10000)      body.reasoning_effort = "high";
-          else if (level === "MEDIUM" || budget >= 4000) body.reasoning_effort = "medium";
-          else if (level === "LOW"  || budget > 0)      body.reasoning_effort = "low";
-          else if (thinkingCfg.includeThoughts)         body.reasoning_effort = "medium";
-        } else if (isThinkingModel) {
-          // Không có thinkingConfig nhưng model name rõ ràng là thinking model
-          body.reasoning_effort = "medium";
+      if (shouldUseReasoningEffort(thinkingCfg, isThinkingModel)) {
+        if (mappedEntry && mappedEntry.reasoning_effort) body.reasoning_effort = mappedEntry.reasoning_effort;
+        if (!body.reasoning_effort) {
+          body.reasoning_effort = inferReasoningEffort(thinkingCfg, isThinkingModel, { preferXhigh: true });
+          if (!body.reasoning_effort) delete body.reasoning_effort;
         }
+      } else {
+        delete body.reasoning_effort;
+      }
+
+      if (body.reasoning_effort) {
+        body.reasoning_effort = normalizeReasoningEffort(body.reasoning_effort, { preferXhigh: true }) || body.reasoning_effort;
+      }
+
+      if (body.model) {
+        body.model = adaptiveGptModelForReasoning(body.model, body.reasoning_effort);
       }
 
       // Inject thinkingConfig vào Gemini body nếu chưa có.
       // 9router đọc field này khi translate Antigravity/Gemini format → provider format.
       // Thiếu field này → 9router không activate thinking dù model hỗ trợ.
       if (isThinkingModel && !thinkingCfg) {
-        const budgetByEffort = { low: 4000, medium: 8000, high: 16000 };
+        const budgetByEffort = { low: 4000, medium: 8000, high: 16000, xhigh: 24000 };
         const budget = budgetByEffort[body.reasoning_effort] || 8000;
         if (!requestBody.generationConfig) requestBody.generationConfig = {};
         requestBody.generationConfig.thinkingConfig = {
@@ -455,7 +483,7 @@ async function runProxy(options) {
       // GPT / Gemini chỉ cần reasoning_effort — thêm thinking block cho GPT sẽ gây 400.
       const targetIsClaudeModel = String(body.model || originalModel || "").toLowerCase().includes("claude");
       if (!body.thinking && body.reasoning_effort && targetIsClaudeModel) {
-        const budgetByEffort = { low: 4000, medium: 8000, high: 16000 };
+        const budgetByEffort = { low: 4000, medium: 8000, high: 16000, xhigh: 24000 };
         const explicitBudget = thinkingCfg && Number(thinkingCfg.thinkingBudget || 0);
         body.thinking = {
           type: "enabled",
@@ -505,15 +533,18 @@ async function runProxy(options) {
       res.writeHead(response.status, responseHeaders);
 
       if (!response.body) {
-        res.end(await response.text().catch(() => ""));
+        res.end(stripInternalInstructionLeaks(await response.text().catch(() => "")));
         return;
       }
 
       const reader = response.body.getReader();
+      const decoder = new TextDecoder();
       while (true) {
         const { done, value } = await reader.read();
         if (done) { res.end(); break; }
-        res.write(Buffer.from(value));
+        const chunk = decoder.decode(value, { stream: true });
+        const safeChunk = stripInternalInstructionLeaks(chunk);
+        if (safeChunk) res.write(Buffer.from(safeChunk));
       }
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -587,9 +618,16 @@ const proxyHelpers = require("./helpers");
 
 module.exports = {
   ...proxyHelpers,
+  buildResponsesApiBody,
   responsesApiToGeminiJson,
   runProxy,
   chatCompletionsRouterUrl,
-  modelWithReasoningSuffix,
+  isGptResponsesModel,
+  isInternalInstructionLeak,
+  stripInternalInstructionLeaks,
+  normalizeReasoningEffort,
+  inferReasoningEffort,
+  adaptiveGptModelForReasoning,
+  shouldUseReasoningEffort,
   transformResponsesApiStream,
 };

@@ -62,6 +62,27 @@ function guiPresets() {
   return {};
 }
 
+async function reloadProxyAfterConfigSave(previousConfig, nextConfig, body, options) {
+  const port = Number(nextConfig.port || options.port || 443);
+  const targetHost = primaryTargetHost(nextConfig);
+  const proxy = { reloaded: false, wasRunning: false, port };
+  if (!(await checkProxyHealth(port, targetHost))) return proxy;
+
+  const sudoPassword = String(body.sudoPassword || "");
+  await stopProxyByPort({ sudoPassword, port, targetHost });
+  const result = await startProxyDetached({ sudoPassword, port, targetHost });
+  appendLog("info", "Proxy reloaded after config save", {
+    port,
+    targetHost,
+    changed: {
+      routerUrl: previousConfig.routerUrl !== nextConfig.routerUrl,
+      apiKey: previousConfig.apiKey !== nextConfig.apiKey,
+      modelMap: JSON.stringify(previousConfig.modelMap || {}) !== JSON.stringify(nextConfig.modelMap || {}),
+    },
+  });
+  return { ...result, reloaded: true, wasRunning: true };
+}
+
 // Windows: gộp cert install + hosts write + DNS flush vào 1 PowerShell elevated = 1 UAC prompt.
 // Trả về { cert, dns } giống như installCert và addDNSEntries riêng lẻ.
 async function applyWindowsSetup({ certCaPath, targetHosts, remoteHost, remoteIp }) {
@@ -96,7 +117,7 @@ function createRouteHandlers(options) {
   return {
     handleBootstrap: (_req, res) => handleBootstrap(res),
     handleLogs: (_req, res) => sendJson(res, 200, readRecentLogs()),
-    handleSaveConfig,
+    handleSaveConfig: (req, res) => handleSaveConfig(req, res, options),
     handleExportConfig: (_req, res) => handleExportConfig(res),
     handleImportConfig,
     handleCheckKey,
@@ -142,7 +163,7 @@ async function handleBootstrap(res) {
   });
 }
 
-async function handleSaveConfig(req, res) {
+async function handleSaveConfig(req, res, options) {
   const body = await readRequestJson(req);
   const current = readConfig();
   const modelMap = body.modelMap && typeof body.modelMap === "object" && !Array.isArray(body.modelMap)
@@ -159,7 +180,8 @@ async function handleSaveConfig(req, res) {
     modelMap,
   };
   writeConfig(next);
-  sendJson(res, 200, { config: next });
+  const proxy = await reloadProxyAfterConfigSave(current, next, body, options);
+  sendJson(res, 200, { config: next, proxy });
 }
 
 async function handleCheckKey(req, res) {
@@ -299,6 +321,7 @@ async function handleStopAndCleanup(req, res, options) {
     sudoPassword,
     port,
     targetHost: primaryTargetHost(cfg),
+    removePlist: true,   // Full cleanup: xóa LaunchDaemon plist để proxy không tự bật lại sau reboot
   });
   const dns = await removeDNSEntries({ targetHosts, sudoPassword });
   appendLog("info", "Proxy stopped and DNS cleanup requested", {
@@ -539,6 +562,16 @@ async function startGuiServer(options = {}) {
   const url = `http://127.0.0.1:${uiPort}/`;
   console.log(`GUI ready at ${url}`);
   appendLog("info", "GUI backend ready", { url });
+
+  // Windows: refresh Scheduled Task path mỗi khi GUI khởi động.
+  // Đảm bảo autostart task luôn trỏ đúng binary sau khi cập nhật app.
+  if (IS_WIN) {
+    // windowsRefreshAutoStartPath được re-export qua proxy/control → autostart
+    const ctrl = require("../proxy/control");
+    if (typeof ctrl.windowsRefreshAutoStartPath === "function") {
+      ctrl.windowsRefreshAutoStartPath().catch(() => { /* best-effort */ });
+    }
+  }
 
   return { server, url, port: uiPort };
 }

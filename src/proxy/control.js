@@ -22,6 +22,10 @@ function normalizeProcessName(value) {
 const {
   bootstrapMacProxyLaunchDaemon,
   bootoutMacProxyLaunchDaemon,
+  macLaunchAgentBootstrapCommand,
+  macLaunchAgentBootoutCommand,
+  macLaunchAgentDomain,
+  macLaunchAgentPrintCommand,
   macProxyLaunchDaemonLabel,
   macProxyLaunchDaemonPath,
   macProxyLaunchDaemonPlist,
@@ -38,6 +42,9 @@ const {
   disableAutoStart,
   enableAutoStart,
   isAutoStartEnabled,
+  windowsAutoStartStatusScript,
+  windowsRefreshAutoStartPath,
+  windowsRegisterAutoStartScript,
 } = require("../system/autostart");
 
 async function isPortListening(port) {
@@ -236,7 +243,9 @@ async function killPidsUnix(pids, sudoPassword) {
   }
 }
 
-async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET }) {
+// removePlist: truyền true khi muốn full cleanup (Stop & Remove DNS).
+// Nếu false, chỉ stop cho session này – proxy vẫn auto-start sau reboot (via LaunchDaemon).
+async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET, removePlist = false }) {
   if (!(await checkProxyHealth(port, targetHost)) && !(await isPortListening(port))) {
     return { stopped: false, wasRunning: false, port };
   }
@@ -253,7 +262,9 @@ async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET
     await execPowerShell(psKill, { elevated: true });
   } else {
     if (IS_MAC && Number(port) < 1024 && fs.existsSync(macProxyLaunchDaemonPath())) {
-      await bootoutMacProxyLaunchDaemon(sudoPassword).catch((error) => {
+      // removePlist=true (Stop & Remove DNS): xóa plist để proxy không auto-start sau reboot
+      // removePlist=false (Stop Proxy tạm thời): giữ plist, proxy vẫn tự bật lại sau reboot
+      await bootoutMacProxyLaunchDaemon(sudoPassword, { removePlist }).catch((error) => {
         appendLog("warn", "Failed to unload proxy LaunchDaemon before PID kill", { message: error.message });
       });
       for (let i = 0; i < 5; i += 1) {
@@ -284,6 +295,10 @@ module.exports = {
   checkProxyHealth,
   disableAutoStart,
   enableAutoStart,
+  macLaunchAgentBootstrapCommand,
+  macLaunchAgentBootoutCommand,
+  macLaunchAgentDomain,
+  macLaunchAgentPrintCommand,
   macProxyLaunchDaemonLabel,
   macProxyLaunchDaemonPath,
   macProxyLaunchDaemonPlist,
@@ -300,5 +315,8 @@ module.exports = {
   startProxyDetached,
   stopProxyByPort,
   waitForProxyHealth,
+  windowsAutoStartStatusScript,
+  windowsRefreshAutoStartPath,
+  windowsRegisterAutoStartScript,
   xmlEscape,
 };
