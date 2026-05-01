@@ -649,6 +649,69 @@ function guiClientScript() {
       }
     }
 
+    // ── Claude Code ──────────────────────────────────────────────────────────
+    async function loadClaudeCode() {
+      try {
+        const d = await api("/api/claudecode");
+        if ($("claudecodeApiKey"))  $("claudecodeApiKey").value  = d.apiKey  || "";
+        if ($("claudecodeBaseUrl")) $("claudecodeBaseUrl").value = d.baseUrl || "";
+        if ($("claudecodeConfigPath")) $("claudecodeConfigPath").textContent = d.configPath || "—";
+      } catch (err) {
+        showStatus("claudecodeStatus", t("error.prefix", { message: err.message }), "err");
+      }
+    }
+
+    async function saveClaudeCode() {
+      $("claudecodeSaveBtn").disabled = true;
+      showStatus("claudecodeStatus", t("message.saving"), "loading");
+      try {
+        await api("/api/claudecode", {
+          method: "PUT",
+          body: JSON.stringify({
+            apiKey:  $("claudecodeApiKey")  ? $("claudecodeApiKey").value.trim()  : undefined,
+            baseUrl: $("claudecodeBaseUrl") ? $("claudecodeBaseUrl").value.trim() : undefined,
+          }),
+        });
+        showStatus("claudecodeStatus", t("message.claudecodeSaved"), "ok");
+      } catch (err) {
+        showStatus("claudecodeStatus", t("error.prefix", { message: err.message }), "err");
+      } finally {
+        $("claudecodeSaveBtn").disabled = false;
+      }
+    }
+
+    // ── Codex ─────────────────────────────────────────────────────────────────
+    async function loadCodex() {
+      try {
+        const d = await api("/api/codex");
+        if ($("codexApiKey"))    $("codexApiKey").value    = d.apiKey  || "";
+        if ($("codexBaseUrl"))   $("codexBaseUrl").value   = d.baseUrl || "";
+        if ($("codexConfigPath")) $("codexConfigPath").textContent = d.configPath || "—";
+        if ($("codexEnvNote"))   $("codexEnvNote").textContent    = t("codex.envNote");
+      } catch (err) {
+        showStatus("codexStatus", t("error.prefix", { message: err.message }), "err");
+      }
+    }
+
+    async function saveCodex() {
+      $("codexSaveBtn").disabled = true;
+      showStatus("codexStatus", t("message.saving"), "loading");
+      try {
+        await api("/api/codex", {
+          method: "PUT",
+          body: JSON.stringify({
+            apiKey:  $("codexApiKey")  ? $("codexApiKey").value.trim()  : undefined,
+            baseUrl: $("codexBaseUrl") ? $("codexBaseUrl").value.trim() : undefined,
+          }),
+        });
+        showStatus("codexStatus", t("message.codexSaved"), "ok");
+      } catch (err) {
+        showStatus("codexStatus", t("error.prefix", { message: err.message }), "err");
+      } finally {
+        $("codexSaveBtn").disabled = false;
+      }
+    }
+
     function switchTab(tab) {
       document.querySelectorAll(".tab-btn").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.tab === tab);
@@ -656,9 +719,11 @@ function guiClientScript() {
       document.querySelectorAll(".tab-panel").forEach((panel) => {
         panel.classList.toggle("active", panel.dataset.panel === tab);
       });
-      if (tab === "logs") loadLogs();
-      if (tab === "dashboard") loadStatus();
-      if (tab === "doctor") runDoctor();
+      if (tab === "logs")        loadLogs();
+      if (tab === "dashboard")   loadStatus();
+      if (tab === "doctor")      runDoctor();
+      if (tab === "claudecode")  loadClaudeCode();
+      if (tab === "codex")       loadCodex();
     }
 
     function bindEvents() {
@@ -704,6 +769,18 @@ function guiClientScript() {
       $("importConfigBtn").addEventListener("click", () => $("importConfigFile").click());
       $("importConfigFile").addEventListener("change", (e) => {
         if (e.target.files && e.target.files[0]) importConfigUi(e.target.files[0]);
+      });
+      // Claude Code tab
+      if ($("claudecodeSaveBtn")) $("claudecodeSaveBtn").addEventListener("click", saveClaudeCode);
+      if ($("claudecodeEyeBtn"))  $("claudecodeEyeBtn").addEventListener("click", () => {
+        const inp = $("claudecodeApiKey");
+        if (inp) inp.type = inp.type === "password" ? "text" : "password";
+      });
+      // Codex tab
+      if ($("codexSaveBtn")) $("codexSaveBtn").addEventListener("click", saveCodex);
+      if ($("codexEyeBtn"))  $("codexEyeBtn").addEventListener("click", () => {
+        const inp = $("codexApiKey");
+        if (inp) inp.type = inp.type === "password" ? "text" : "password";
       });
     }
 

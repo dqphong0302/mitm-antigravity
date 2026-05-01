@@ -22,6 +22,11 @@ function createGuiRoutes(handlers) {
         ["POST", "/api/autostart/disable", handlers.handleDisableAutoStart],
         ["GET", "/api/status", handlers.handleStatus],
         ["POST", "/api/logs/clear", handlers.handleClearLogs],
+        // Third-party CLI configs
+        ["GET",  "/api/claudecode",     handlers.handleGetClaudeCode],
+        ["PUT",  "/api/claudecode",     handlers.handleSaveClaudeCode],
+        ["GET",  "/api/codex",          handlers.handleGetCodex],
+        ["PUT",  "/api/codex",          handlers.handleSaveCodex],
     ].map(([method, pathname, handler]) => ({ method, pathname, handler }));
 }
 

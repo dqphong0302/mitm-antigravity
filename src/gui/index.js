@@ -57,6 +57,8 @@ const {
 const { guiHtml } = require("./template");
 const { sendApiError, sendHtml, sendNotFound } = require("./api-utils");
 const { createGuiRoutes, findGuiRoute } = require("./routes");
+const { getClaudeCodeSettings, saveClaudeCodeSettings } = require("../thirdparty/claudecode");
+const { getCodexSettings, saveCodexSettings } = require("../thirdparty/codex");
 
 function guiPresets() {
   return {};
@@ -137,6 +139,11 @@ function createRouteHandlers(options) {
     handleDisableAutoStart,
     handleStatus: (_req, res) => handleStatus(res, options),
     handleClearLogs,
+    // Third-party CLI configs
+    handleGetClaudeCode: (_req, res) => sendJson(res, 200, getClaudeCodeSettings()),
+    handleSaveClaudeCode,
+    handleGetCodex: (_req, res) => sendJson(res, 200, getCodexSettings()),
+    handleSaveCodex,
   };
 }
 
@@ -542,6 +549,24 @@ async function handleImportConfig(req, res) {
     mappedModels: Object.keys(imported.modelMap || {}).length,
   });
   sendJson(res, 200, { config: imported });
+}
+
+async function handleSaveClaudeCode(req, res) {
+  const body = await readRequestJson(req);
+  const result = saveClaudeCodeSettings({
+    apiKey:  typeof body.apiKey  === "string" ? body.apiKey.trim()  : undefined,
+    baseUrl: typeof body.baseUrl === "string" ? body.baseUrl.trim() : undefined,
+  });
+  sendJson(res, 200, result);
+}
+
+async function handleSaveCodex(req, res) {
+  const body = await readRequestJson(req);
+  const result = saveCodexSettings({
+    apiKey:  typeof body.apiKey  === "string" ? body.apiKey.trim()  : undefined,
+    baseUrl: typeof body.baseUrl === "string" ? body.baseUrl.trim() : undefined,
+  });
+  sendJson(res, 200, result);
 }
 
 async function startGuiServer(options = {}) {
