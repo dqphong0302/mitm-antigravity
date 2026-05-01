@@ -235,7 +235,12 @@ async function runCleanup(options) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const cmd = args._[0] || "start";
+
+  // Windows: khi không có argument (double-click binary), mặc định mở GUI
+  // thay vì start proxy CLI – UX tốt hơn cho người dùng thông thường.
+  // macOS/Linux: giữ "start" để tương thích với cách dùng CLI qua terminal.
+  const defaultCmd = IS_WIN ? "gui" : "start";
+  const cmd = args._[0] || defaultCmd;
 
   if (args.help || cmd === "--help" || cmd === "help") {
     printHelp();
