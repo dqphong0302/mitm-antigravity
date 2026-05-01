@@ -11,6 +11,7 @@ function createGuiRoutes(handlers) {
         ["POST", "/api/stop-proxy", handlers.handleStopProxy],
         ["POST", "/api/stop-and-cleanup", handlers.handleStopAndCleanup],
         ["POST", "/api/reload-proxy", handlers.handleReloadProxy],
+        ["POST", "/api/force-kill-port", handlers.handleForceKillPort],
         ["POST", "/api/apply-dns", handlers.handleApplyDns],
         ["POST", "/api/apply-app-trust", handlers.handleApplyAppTrust],
         ["POST", "/api/remove-dns", handlers.handleRemoveDns],

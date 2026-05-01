@@ -98,6 +98,7 @@ function guiHtml() {
               <button class="secondary" id="startProxyOnlyBtn" type="button" data-i18n="button.startProxyOnly">Start Proxy Only</button>
               <button class="danger" id="stopCleanupBtn" type="button" data-i18n="button.stopCleanup">Stop & Remove DNS</button>
               <button class="secondary" id="removeDnsBtn" type="button" data-i18n="button.removeDns">Remove DNS</button>
+              <button class="danger" id="forceKillPortBtn" type="button" data-i18n="button.forceKillPort">Force Kill Port</button>
               <button class="secondary" id="enableAutoStartBtn" type="button" data-i18n="button.enableAutoStart">Enable Auto Start</button>
               <button class="secondary" id="disableAutoStartBtn" type="button" data-i18n="button.disableAutoStart">Disable Auto Start</button>
             </div>
@@ -194,7 +195,6 @@ function guiHtml() {
                     <th data-i18n="mapping.name">Antigravity model</th>
                     <th></th>
                     <th data-i18n="mapping.upstream">Upstream model</th>
-                    <th data-i18n="mapping.reasoning">Reasoning</th>
                     <th data-i18n="mapping.status">Status</th>
                   </tr>
                 </thead>

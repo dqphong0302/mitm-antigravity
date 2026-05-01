@@ -105,6 +105,7 @@ function createRouteHandlers(options) {
     handleStopProxy: (req, res) => handleStopProxy(req, res, options),
     handleStopAndCleanup: (req, res) => handleStopAndCleanup(req, res, options),
     handleReloadProxy: (req, res) => handleReloadProxy(req, res, options),
+    handleForceKillPort: (req, res) => handleForceKillPort(req, res, options),
     handleApplyDns: (req, res) => handleApplyDns(req, res, options),
     handleApplyAppTrust: (_req, res) => handleApplyAppTrust(res),
     handleRemoveDns,
@@ -216,20 +217,18 @@ async function handleStartProxy(req, res, options) {
   const nodeTrust = await applyAntigravityNodeTrust(cert.ca);
   const port = Number(cfg.port || options.port || 443);
   const targetHost = primaryTargetHost(cfg);
-  let restarted = false;
   appendLog("info", "Proxy start requested", { port, targetHosts: targetHosts.length });
-  if (await checkProxyHealth(port, targetHost)) {
-    await stopProxyByPort({ sudoPassword, port, targetHost });
-    restarted = true;
-  }
+  // startProxyDetached handles ownership:
+  //  - health check OK (our proxy)   → alreadyRunning: true, no restart
+  //  - port busy by foreign process  → throws error with owner info
+  //  - not running                   → start LaunchDaemon (macOS) / detached (others)
   const result = await startProxyDetached({ sudoPassword, port, targetHost });
-  appendLog("info", "Proxy started from UI", {
+  appendLog("info", "Proxy start from UI", {
     port,
     targetHost,
-    restarted,
     alreadyRunning: result.alreadyRunning,
   });
-  sendJson(res, 200, { ...result, restarted, cert: certResult, dns: dnsResult, nodeTrust });
+  sendJson(res, 200, { ...result, restarted: false, cert: certResult, dns: dnsResult, nodeTrust });
 }
 
 async function handleStartProxyOnly(req, res, options) {
@@ -238,20 +237,18 @@ async function handleStartProxyOnly(req, res, options) {
   const sudoPassword = String(body.sudoPassword || "");
   const port = Number(cfg.port || options.port || 443);
   const targetHost = primaryTargetHost(cfg);
-  let restarted = false;
   appendLog("info", "Proxy-only start requested", { port, targetHost });
-  if (await checkProxyHealth(port, targetHost)) {
-    await stopProxyByPort({ sudoPassword, port, targetHost });
-    restarted = true;
-  }
+  // startProxyDetached handles ownership:
+  //  - health check OK (our proxy)   → alreadyRunning: true, no restart
+  //  - port busy by foreign process  → throws error with owner info
+  //  - not running                   → start LaunchDaemon (macOS) / detached (others)
   const result = await startProxyDetached({ sudoPassword, port, targetHost });
-  appendLog("info", "Proxy started without setup from UI", {
+  appendLog("info", "Proxy start-only from UI", {
     port,
     targetHost,
-    restarted,
     alreadyRunning: result.alreadyRunning,
   });
-  sendJson(res, 200, { ...result, restarted, setupSkipped: true });
+  sendJson(res, 200, { ...result, restarted: false, setupSkipped: true });
 }
 
 async function handleStopProxy(req, res, options) {
@@ -268,6 +265,28 @@ async function handleStopProxy(req, res, options) {
     stopped: result.stopped,
   });
   sendJson(res, 200, result);
+}
+
+// Kill bất kỳ process nào đang chiếm port proxy (không phân biệt có phải proxy của mình không).
+// Hữu ích khi process lạ (nginx, caddy, …) chiếm cổng 443 trước khi khởi động MITM proxy.
+async function handleForceKillPort(req, res, options) {
+  const body = await readRequestJson(req);
+  const cfg = readConfig();
+  const sudoPassword = String(body.sudoPassword || "");
+  const port = Number(cfg.port || options.port || 443);
+  // Lấy thông tin process đang chiếm port trước khi kill để trả về cho UI
+  const owners = await getPortOwners(port);
+  const ownerText = formatPortOwners(owners);
+  const wasListening = owners.length > 0;
+  appendLog("info", "Force-kill port requested", { port, owner: ownerText || "(none)" });
+  if (!wasListening) {
+    sendJson(res, 200, { killed: false, wasListening: false, port, owners: [] });
+    return;
+  }
+  // stopProxyByPort handles: LaunchDaemon bootout (macOS <1024) + kill PIDs
+  const result = await stopProxyByPort({ sudoPassword, port, targetHost: primaryTargetHost(cfg) });
+  appendLog("info", "Force-kill port done", { port, stopped: result.stopped, owner: ownerText });
+  sendJson(res, 200, { killed: result.stopped, wasListening: true, port, owners, ownerText });
 }
 
 async function handleStopAndCleanup(req, res, options) {

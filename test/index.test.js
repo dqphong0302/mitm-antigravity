@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const test = require("node:test");
+const vm = require("node:vm");
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mitm-antigravity-test-"));
 const hostsPath = path.join(tempRoot, "hosts");
@@ -436,6 +437,59 @@ test("upstream retry and error helpers preserve provider failures", () => {
   assert.match(wrapped.error.message, /timeout/);
 });
 
+test("chatCompletionsRouterUrl normalizes Responses endpoint back to chat endpoint", () => {
+  assert.equal(
+    mitm.chatCompletionsRouterUrl("https://router.example/v1/responses"),
+    "https://router.example/v1/chat/completions"
+  );
+  assert.equal(
+    mitm.chatCompletionsRouterUrl("https://router.example/v1/chat/completions/"),
+    "https://router.example/v1/chat/completions"
+  );
+  assert.equal(
+    mitm.chatCompletionsRouterUrl("https://router.example/v1"),
+    "https://router.example/v1/chat/completions"
+  );
+});
+
+test("modelWithReasoningSuffix applies Codex GPT reasoning suffixes", () => {
+  assert.equal(mitm.modelWithReasoningSuffix("cx/gpt-5.5", "xhigh"), "cx/gpt-5.5-xhigh");
+  assert.equal(mitm.modelWithReasoningSuffix("cx/gpt-5.3-codex-high", "xhigh"), "cx/gpt-5.3-codex-xhigh");
+  assert.equal(mitm.modelWithReasoningSuffix("gh/gpt-5.5", "xhigh"), "gh/gpt-5.5");
+  assert.equal(mitm.modelWithReasoningSuffix("cx/claude-sonnet-4-6", "xhigh"), "cx/claude-sonnet-4-6");
+});
+
+test("Responses API stream becomes Antigravity-safe Gemini SSE", async () => {
+  const events = [
+    { type: "response.reasoning_summary_text.delta", delta: "thinking" },
+    { type: "response.output_text.delta", delta: "Hi" },
+    { type: "response.completed" },
+  ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(events));
+      controller.close();
+    },
+  });
+  const writes = [];
+  await mitm.transformResponsesApiStream(stream, {
+    write(chunk) { writes.push(String(chunk)); },
+  });
+
+  const output = writes.join("");
+  assert.doesNotMatch(output, /thinking/);
+  assert.match(output, /"response":/);
+  assert.doesNotMatch(output, /"index":0/);
+  assert.match(output, /"text":"Hi"/);
+  assert.match(output, /"finishReason":"STOP"/);
+  assert.match(output, /data: \[DONE\]/);
+  assert.equal((output.match(/^data: /gm) || []).length, 2);
+  for (const line of output.split(/\n/).filter((item) => item.startsWith("data: "))) {
+    if (line === "data: [DONE]") continue;
+    JSON.parse(line.slice(6));
+  }
+});
+
 test("compact proxy logger writes one-line messages", () => {
   const originalLog = console.log;
   const lines = [];
@@ -506,6 +560,11 @@ test("config tab combines model loading and saving", () => {
   assert.match(html, /button.startShort/);
   assert.match(html, /data-tab="guide"/);
   assert.match(html, /id="stopCleanupBtn"/);
+});
+
+test("GUI client script is valid browser JavaScript", () => {
+  const { guiClientScript } = require("../src/gui/client");
+  assert.doesNotThrow(() => new vm.Script(guiClientScript()));
 });
 
 test("GUI route table finds known routes and rejects unknown routes", () => {

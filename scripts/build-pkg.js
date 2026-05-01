@@ -30,19 +30,42 @@ const OUTPUT_NAMES = {
   "linux-arm64": "mitm-antigravity-linux-arm64",
 };
 
+const AGGREGATE_TARGETS = {
+  macos: ["macos-arm64", "macos-x64"],
+  windows: ["win-x64"],
+  linux: ["linux-x64", "linux-arm64"],
+  all: ["macos-arm64", "macos-x64", "win-x64", "linux-x64", "linux-arm64"],
+};
+
 const target = process.argv[2];
+
+if (AGGREGATE_TARGETS[target]) {
+  for (const childTarget of AGGREGATE_TARGETS[target]) {
+    execSync(
+      `${process.execPath} ${JSON.stringify(__filename)} ${childTarget}`,
+      { stdio: "inherit", cwd: root }
+    );
+  }
+  process.exit(0);
+}
 
 if (!target || !PKG_TARGETS[target]) {
   console.error("Usage: node scripts/build-pkg.js <target>");
-  console.error("Valid targets: " + Object.keys(PKG_TARGETS).join(", "));
+  console.error("Valid targets: " + [
+    ...Object.keys(PKG_TARGETS),
+    ...Object.keys(AGGREGATE_TARGETS),
+  ].join(", "));
   process.exit(1);
 }
 
 const pkgTarget  = PKG_TARGETS[target];
 const outputName = OUTPUT_NAMES[target];
 const outputPath = path.join(distDir, outputName);
+const genericOutputPath = path.join(distDir, process.platform === "win32" ? "mitm-antigravity.exe" : "mitm-antigravity");
 
 fs.mkdirSync(distDir, { recursive: true });
+fs.rmSync(genericOutputPath, { force: true });
+fs.rmSync(outputPath, { force: true });
 console.log("Building " + target + " → " + outputName);
 console.log("pkg target: " + pkgTarget);
 
@@ -53,6 +76,10 @@ try {
   );
 } catch (_) {
   // pkg có thể exit non-zero trên một số platform dù build thành công → kiểm tra output
+}
+
+if (!fs.existsSync(outputPath) && fs.existsSync(genericOutputPath)) {
+  fs.renameSync(genericOutputPath, outputPath);
 }
 
 if (!fs.existsSync(outputPath)) {

@@ -134,9 +134,8 @@ function guiClientScript() {
         const select = row.querySelector("select.model-select");
         const input = row.querySelector("input.upstream-model");
         const value = select ? select.value.trim() : (input ? input.value.trim() : "");
-        const reasoning = (row.querySelector("select.reasoning-effort") || {}).value || "";
         if (alias && value) {
-          out[alias] = reasoning ? { model: value, reasoning_effort: reasoning } : value;
+          out[alias] = value;
         }
       });
       return out;
@@ -147,10 +146,6 @@ function guiClientScript() {
       if (typeof entry === "string") return entry;
       if (typeof entry === "object") return entry.model || "";
       return "";
-    }
-
-    function mappingReasoningValue(entry) {
-      return entry && typeof entry === "object" ? (entry.reasoning_effort || "") : "";
     }
 
     function makeModelCell(selected) {
@@ -164,13 +159,6 @@ function guiClientScript() {
       return "<input class=\\"upstream-model\\" value=\\"" + esc(selected) + "\\" placeholder=\\"e.g. cx/gpt-5.5\\">";
     }
 
-    function makeReasoningCell(selected) {
-      const values = ["", "minimal", "low", "medium", "high"];
-      return "<select class=\\"reasoning-effort\\">" + values.map((value) => {
-        const label = value ? value : t("reasoning.default");
-        return "<option value=\\"" + esc(value) + "\\"" + (value === selected ? " selected" : "") + ">" + esc(label) + "</option>";
-      }).join("") + "</select>";
-    }
 
     function renderMappings() {
       const map = (state.config && state.config.modelMap) || {};
@@ -179,7 +167,7 @@ function guiClientScript() {
       $("mappingCount").textContent = t("mapping.count", { mapped: mappedCount, total: aliases.length });
 
       if (aliases.length === 0) {
-        $("mappingRows").innerHTML = "<tr><td colspan=\\"5\\">" + esc(t("mapping.noModels")) + "</td></tr>";
+        $("mappingRows").innerHTML = "<tr><td colspan=\\"4\\">" + esc(t("mapping.noModels")) + "</td></tr>";
         return;
       }
 
@@ -190,7 +178,7 @@ function guiClientScript() {
           "<td class=\\"alias-cell\\">" + esc(alias) + "</td>" +
           "<td class=\\"arrow-cell\\">→</td>" +
           "<td class=\\"model-cell\\">" + makeModelCell(mappingModelValue(entry)) + "</td>" +
-          "<td class=\\"reasoning-cell\\">" + makeReasoningCell(mappingReasoningValue(entry)) + "</td>" +
+
           "<td class=\\"mapping-state\\"><span class=\\"tag " + (mapped ? "ok" : "neutral") + "\\">" + esc(mapped ? t("mapping.mapped") : t("mapping.unmapped")) + "</span></td>" +
         "</tr>";
       }).join("");
@@ -254,7 +242,7 @@ function guiClientScript() {
     }
 
     function setSystemButtons(disabled) {
-      ["proxyToggleBtn", "applyDnsBtn", "startProxyOnlyBtn", "stopCleanupBtn", "removeDnsBtn", "enableAutoStartBtn", "disableAutoStartBtn", "uninstallCertBtn", "runDoctorBtn"].forEach((id) => {
+      ["proxyToggleBtn", "applyDnsBtn", "startProxyOnlyBtn", "stopCleanupBtn", "removeDnsBtn", "forceKillPortBtn", "enableAutoStartBtn", "disableAutoStartBtn", "uninstallCertBtn", "runDoctorBtn"].forEach((id) => {
         if ($(id)) $(id).disabled = disabled;
       });
     }
@@ -387,6 +375,27 @@ function guiClientScript() {
       const action = state.status && state.status.proxyListening ? "stop" : "start";
       if (action === "stop") return stopProxy();
       return startProxy();
+    }
+
+    async function forceKillPort() {
+      const cfg = state.config || {};
+      const port = cfg.port || 443;
+      if (!window.confirm(t("message.killingPort", { port }))) return;
+      setSystemButtons(true);
+      showStatus("systemStatus", t("message.killingPort", { port }), "loading");
+      try {
+        const result = await api("/api/force-kill-port", { method: "POST", body: elevatedBody() });
+        if (!result.wasListening) {
+          showStatus("systemStatus", t("message.portWasFree", { port: result.port }), "ok");
+        } else {
+          showStatus("systemStatus", t("message.portKilled", { owner: result.ownerText || "process", port: result.port }), "ok");
+        }
+        loadStatus();
+      } catch (error) {
+        showStatus("systemStatus", t("error.prefix", { message: error.message }), "err");
+      } finally {
+        setSystemButtons(false);
+      }
     }
 
     async function applyDns() {
@@ -659,6 +668,7 @@ function guiClientScript() {
       $("startProxyOnlyBtn").addEventListener("click", startProxyOnly);
       $("stopCleanupBtn").addEventListener("click", stopAndCleanup);
       $("removeDnsBtn").addEventListener("click", removeDns);
+      $("forceKillPortBtn").addEventListener("click", forceKillPort);
       $("runDoctorBtn").addEventListener("click", runDoctor);
       $("uninstallCertBtn").addEventListener("click", uninstallCertUi);
       $("enableAutoStartBtn").addEventListener("click", enableAutoStartUi);

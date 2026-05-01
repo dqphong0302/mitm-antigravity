@@ -42,6 +42,119 @@ fn append_startup_log(level: &str, message: &str) {
     }
 }
 
+#[cfg(unix)]
+fn old_app_instance_pids() -> Vec<u32> {
+    let Ok(output) = Command::new("ps").args(["-axo", "pid=,command="]).output() else {
+        return Vec::new();
+    };
+    let current_pid = std::process::id();
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let (pid_text, command) = trimmed.split_once(char::is_whitespace)?;
+            let pid = pid_text.trim().parse::<u32>().ok()?;
+            if pid == current_pid {
+                return None;
+            }
+            let is_mitm_app = command.contains("MITM AG.app/Contents/MacOS/")
+                || command.contains("MITM Antigravity.app/Contents/MacOS/");
+            is_mitm_app.then_some(pid)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+#[cfg(windows)]
+fn old_app_instance_pids() -> Vec<u32> {
+    let current_pid = std::process::id().to_string();
+    let script = format!(
+        "$current = {current_pid}; \
+         Get-CimInstance Win32_Process | \
+         Where-Object {{ $_.ProcessId -ne $current -and ( \
+           $_.Name -eq 'MITM AG.exe' -or \
+           $_.Name -eq 'mitm-ag-tauri.exe' -or \
+           ($_.ExecutablePath -like '*\\MITM AG.exe') -or \
+           ($_.CommandLine -like '*MITM AG.exe*') -or \
+           ($_.CommandLine -like '*mitm-ag-tauri.exe*') \
+         ) }} | Select-Object -ExpandProperty ProcessId"
+    );
+    let Ok(output) = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .filter_map(|item| item.trim().parse::<u32>().ok())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn wait_until_pids_exit(pids: &[u32]) -> bool {
+    for _ in 0..20 {
+        let remaining: BTreeSet<u32> = old_app_instance_pids()
+            .into_iter()
+            .filter(|pid| pids.contains(pid))
+            .collect();
+        if remaining.is_empty() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+fn terminate_old_app_instances() {
+    let pids = old_app_instance_pids();
+    if pids.is_empty() {
+        return;
+    }
+
+    append_startup_log(
+        "info",
+        &format!("Terminating older MITM AG app instances: {pids:?}"),
+    );
+
+    #[cfg(unix)]
+    {
+        for pid in &pids {
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .status();
+        }
+        if !wait_until_pids_exit(&pids) {
+            for pid in &pids {
+                let _ = Command::new("kill")
+                    .args(["-KILL", &pid.to_string()])
+                    .status();
+            }
+            let _ = wait_until_pids_exit(&pids);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        for pid in &pids {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .status();
+        }
+        let _ = wait_until_pids_exit(&pids);
+    }
+}
+
 fn resource_path(app: &tauri::App, name: &str) -> Result<PathBuf, String> {
     app.path()
         .resolve(
@@ -290,6 +403,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            terminate_old_app_instances();
             free_gui_port();
             let backend = start_backend(app)?;
             app.manage(backend);
