@@ -40,6 +40,21 @@ test("formatPortOwners renders process names and pids", () => {
   assert.equal(mitm.formatPortOwners([{ pid: "123", name: "node" }, { pid: "456", name: "nginx" }]), "node#123, nginx#456");
 });
 
+test("proxy health only accepts the current JS proxy", () => {
+  assert.equal(mitm.isManagedProxyHealthPayload(200, JSON.stringify({
+    ok: true,
+    app: mitm.APP_NAME,
+  })), true);
+  assert.equal(mitm.isManagedProxyHealthPayload(200, JSON.stringify({
+    ok: true,
+    app: "mitm-antigravity-python",
+  })), false);
+  assert.equal(mitm.isManagedProxyHealthPayload(500, JSON.stringify({
+    ok: true,
+    app: mitm.APP_NAME,
+  })), false);
+});
+
 test("classifyModelCheckFailure identifies common upstream failures", () => {
   assert.equal(mitm.classifyModelCheckFailure({ code: "ECONNREFUSED", message: "connect ECONNREFUSED" }).category, "router_unreachable");
   assert.equal(mitm.classifyModelCheckFailure(null, { status: 401, message: "Unauthorized" }).category, "auth_failed");
@@ -333,6 +348,39 @@ test("generateCert creates a CA-backed server certificate", async () => {
   assert.equal(server.checkIssued(ca), true);
   assert.equal(server.verify(ca.publicKey), true);
   assert.equal(mitm.certUsesLocalCA(cert.cert, cert.ca), true);
+});
+
+test("macOS system trust command installs CA with SSL and basic policies", () => {
+  const command = mitm.macSystemTrustCommand("/tmp/mitm ca.crt");
+
+  assert.match(command, /security add-trusted-cert/);
+  assert.match(command, /-d/);
+  assert.match(command, /-r trustRoot/);
+  assert.match(command, /-p ssl/);
+  assert.match(command, /-p basic/);
+  assert.match(command, /-k '\/Library\/Keychains\/System\.keychain'/);
+  assert.match(command, /'\/tmp\/mitm ca\.crt'/);
+});
+
+test("PowerShell single-quote helper escapes embedded quotes", () => {
+  assert.equal(mitm.powershellSingleQuote("C:\\Users\\O'Brien\\app"), "'C:\\Users\\O''Brien\\app'");
+});
+
+test("Windows command-line args preserve paths with spaces", () => {
+  assert.equal(
+    mitm.windowsCommandLineArguments([
+      "C:\\Program Files\\MITM AG\\index.js",
+      "start",
+      "--skip-setup",
+      "--port",
+      "443",
+    ]),
+    "\"C:\\Program Files\\MITM AG\\index.js\" start --skip-setup --port 443"
+  );
+  assert.equal(
+    mitm.windowsCommandLineArguments(["C:\\Path With Space\\", "quote\"value"]),
+    "\"C:\\Path With Space\\\\\" \"quote\\\"value\""
+  );
 });
 
 test("release settings sanitizer strips secrets without mutating input", () => {

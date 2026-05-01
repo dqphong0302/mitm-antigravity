@@ -45,10 +45,12 @@ async function writeHostsFileContent(content, sudoPassword) {
   fs.writeFileSync(tempPath, content, { mode: 0o600 });
   try {
     if (IS_WIN) {
-      await execPowerShell(
+      // Gộp copy + ipconfig /flushdns vào 1 elevated script = 1 UAC prompt
+      const psScript = [
         `Copy-Item -LiteralPath '${tempPath.replace(/'/g, "''")}' -Destination '${HOSTS_FILE.replace(/'/g, "''")}' -Force`,
-        { elevated: true }
-      );
+        `ipconfig /flushdns | Out-Null`,
+      ].join("; ");
+      await execPowerShell(psScript, { elevated: true });
       return;
     }
     await execWithSudo(`cat ${shellQuote(tempPath)} > ${shellQuote(HOSTS_FILE)}`, sudoPassword);
@@ -221,9 +223,13 @@ async function resolveRemoteIP(remoteHost) {
   const resolve4 = promisify(resolver.resolve4.bind(resolver));
   const resolve6 = promisify(resolver.resolve6.bind(resolver));
   try {
-    return await resolve4(remoteHost);
+    const addrs = await resolve4(remoteHost);
+    if (!addrs || addrs.length === 0) throw new Error("empty A record");
+    return addrs;
   } catch {
-    return await resolve6(remoteHost);
+    const addrs = await resolve6(remoteHost);
+    if (!addrs || addrs.length === 0) throw new Error(`Cannot resolve ${remoteHost}: no A or AAAA record`);
+    return addrs;
   }
 }
 
@@ -235,7 +241,7 @@ async function addDNSEntry({ targetHost, remoteHost, remoteIp, sudoPassword }) {
   let ip = remoteIp;
   if (!ip) {
     const addresses = await resolveRemoteIP(remoteHost);
-    ip = addresses[0];
+    ip = addresses[0];   // safe: resolveRemoteIP throws nếu array rỗng
   }
 
   const entry = `${ip} ${targetHost}`;
@@ -255,7 +261,7 @@ async function addDNSEntries({ targetHosts, remoteHost, remoteIp, sudoPassword }
   let ip = remoteIp;
   if (!ip) {
     const addresses = await resolveRemoteIP(remoteHost);
-    ip = addresses[0];
+    ip = addresses[0];   // safe: resolveRemoteIP throws nếu array rỗng
   }
 
   const entries = dnsEntriesForHosts(targetHosts, ip);
@@ -308,7 +314,8 @@ async function removeDNSEntries({ targetHosts, sudoPassword }) {
 async function flushDns(sudoPassword) {
   if (usingCustomHostsFile()) return;
   if (IS_WIN) {
-    await execPowerShell("ipconfig /flushdns", { elevated: true });
+    // Windows: flushdns đã được gộp vào writeHostsFileContent (1 UAC prompt duy nhất).
+    // Gọi thêm ở đây sẽ tạo thêm UAC không cần thiết → skip.
     return;
   }
   if (IS_MAC) {

@@ -36,10 +36,22 @@ const {
 async function runProxy(options) {
   const targetHosts = targetHostsFrom(options);
   const cert = certPaths();
-  const sslOptions = {
-    key: fs.readFileSync(cert.keyPath),
-    cert: fs.readFileSync(cert.certPath),
-  };
+
+  // CRITICAL: cert files không tồn tại → crash rõ ràng thay vì ENOENT ẩn
+  let sslOptions;
+  try {
+    sslOptions = {
+      key:  fs.readFileSync(cert.keyPath),
+      cert: fs.readFileSync(cert.certPath),
+    };
+  } catch (err) {
+    throw new Error(
+      `Cannot read TLS certificate files. Run setup first.\n` +
+      `  key:  ${cert.keyPath}\n` +
+      `  cert: ${cert.certPath}\n` +
+      `  Cause: ${err.message}`
+    );
+  }
 
   const cachedTargetIPs = new Map();
   const IP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 phút – tránh stale IP khi Google rotate địa chỉ
@@ -58,10 +70,14 @@ async function runProxy(options) {
     let ip;
     try {
       const addresses = await resolve4(targetHost);
+      if (!addresses || addresses.length === 0) throw new Error("empty A record");
       ip = addresses[0];
     } catch {
       // Không có A record – thử AAAA (Google đôi khi dùng IPv6-only endpoint)
       const addresses = await resolve6(targetHost);
+      if (!addresses || addresses.length === 0) {
+        throw new Error(`Cannot resolve ${targetHost}: no A or AAAA record`);
+      }
       ip = addresses[0];
     }
 

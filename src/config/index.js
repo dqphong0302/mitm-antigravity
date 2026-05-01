@@ -69,7 +69,17 @@ function ensureAppDir() {
 
 function readJsonFile(filePath) {
   if (!filePath || !fs.existsSync(filePath)) return null;
-  return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, "utf-8");
+  } catch (err) {
+    throw new Error(`Cannot read ${filePath}: ${err.message}`);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`Invalid JSON in ${filePath}`);
+  }
 }
 
 function normalizeSettings(raw) {

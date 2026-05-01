@@ -3,10 +3,17 @@ const https = require("https");
 const os = require("os");
 const path = require("path");
 
-const { DEFAULT_TARGET, IS_MAC, IS_WIN } = require("../config/constants");
+const { APP_NAME, DEFAULT_TARGET, IS_MAC, IS_WIN } = require("../config/constants");
 const { appDir, runtimeDir } = require("../config");
 const { appendLog, proxyLogPath } = require("../system/logging");
-const { execPowerShell, execPromise, execWithSudo, shellQuote } = require("../system");
+const {
+  execPowerShell,
+  execPromise,
+  execWithSudo,
+  powershellSingleQuote,
+  shellQuote,
+  windowsCommandLineArguments,
+} = require("../system");
 
 function normalizeProcessName(value) {
   const text = String(value || "").trim();
@@ -93,6 +100,16 @@ function formatPortOwners(owners) {
   return (owners || []).map((owner) => `${owner.name || "unknown"}#${owner.pid}`).join(", ");
 }
 
+function isManagedProxyHealthPayload(statusCode, rawBody) {
+  if (statusCode !== 200) return false;
+  try {
+    const payload = JSON.parse(String(rawBody || ""));
+    return Boolean(payload && payload.ok === true && payload.app === APP_NAME);
+  } catch {
+    return false;
+  }
+}
+
 function checkProxyHealth(port, targetHost = DEFAULT_TARGET) {
   return new Promise((resolve) => {
     let settled = false;
@@ -111,8 +128,12 @@ function checkProxyHealth(port, targetHost = DEFAULT_TARGET) {
       rejectUnauthorized: false,
       timeout: 2000,
     }, (res) => {
-      res.resume();
-      res.on("end", () => done(res.statusCode === 200));
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => done(isManagedProxyHealthPayload(
+        res.statusCode,
+        Buffer.concat(chunks).toString("utf8")
+      )));
     });
     req.on("timeout", () => {
       req.destroy();
@@ -148,9 +169,24 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
   if (IS_WIN) {
     const { cliEntrypointPath } = require("../config");
     const windowsArgs = process.pkg
-      ? `start --skip-setup --port ${Number(port)}`
-      : `${cliEntrypointPath()} start --skip-setup --port ${Number(port)}`;
-    await execPowerShell(`Start-Process -FilePath '${process.execPath.replace(/'/g, "''")}' -ArgumentList '${windowsArgs.replace(/'/g, "''")}' -WorkingDirectory '${runtimeDir().replace(/'/g, "''")}' `, { elevated: true });
+      ? ["start", "--skip-setup", "--port", String(Number(port))]
+      : [cliEntrypointPath(), "start", "--skip-setup", "--port", String(Number(port))];
+    // Dùng wrapper script để: (1) chạy hidden – không hiện console window,
+    // (2) redirect stdout/stderr ra log file để debug được.
+    // -RedirectStandardOutput không dùng được cùng -Verb RunAs nên dùng cmd /c redirect.
+    const cmdLine = [
+      `"${process.execPath.replace(/"/g, '""')}"`,
+      ...windowsArgs.map((a) => windowsCommandLineArgument(a)),
+    ].join(" ");
+    const psScript = [
+      `$logPath = ${powershellSingleQuote(logPath)}`,
+      `$workDir = ${powershellSingleQuote(runtimeDir())}`,
+      `Start-Process -FilePath 'cmd.exe'`,
+      `  -ArgumentList ${powershellSingleQuote(`/c "${cmdLine}" >> "${logPath.replace(/"/g, '""')}" 2>&1`)}`,
+      `  -WorkingDirectory $workDir`,
+      `  -WindowStyle Hidden`,
+    ].join(" `\n");
+    await execPowerShell(psScript, { elevated: true });
   } else if (IS_MAC) {
     await bootstrapMacProxyLaunchDaemon({ sudoPassword, port, logPath });
   } else {
@@ -206,9 +242,15 @@ async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET
   }
 
   if (IS_WIN) {
-    const pids = await pidsListeningOnPortWindows(port);
-    if (pids.length === 0) return { stopped: false, wasRunning: false, port };
-    await execPowerShell(pids.map((pid) => `Stop-Process -Id ${pid} -Force`).join("; "), { elevated: true });
+    // Proxy chạy với admin token (Start-Process -Verb RunAs).
+    // Get-NetTCPConnection từ non-elevated có thể thấy port, nhưng Stop-Process cần admin.
+    // → Gộp find + kill vào 1 elevated script = 1 UAC prompt duy nhất.
+    const psKill = [
+      `$p = Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue`,
+      `      | Select-Object -ExpandProperty OwningProcess -Unique`,
+      `if ($p) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }`,
+    ].join("; ");
+    await execPowerShell(psKill, { elevated: true });
   } else {
     if (IS_MAC && Number(port) < 1024 && fs.existsSync(macProxyLaunchDaemonPath())) {
       await bootoutMacProxyLaunchDaemon(sudoPassword).catch((error) => {
@@ -249,6 +291,7 @@ module.exports = {
   getPortOwners,
   isAutoStartEnabled,
   isPortListening,
+  isManagedProxyHealthPayload,
   parsePidsFromOutput,
   pidsListeningOnPortUnix,
   pidsListeningOnPortWindows,

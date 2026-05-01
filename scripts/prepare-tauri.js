@@ -5,38 +5,57 @@ const { shouldIncludeSecrets, stripReleaseSettings } = require("./settings-sanit
 const root = path.resolve(__dirname, "..");
 const distDir = path.join(root, "dist");
 const resourcesDir = path.join(root, "src-tauri", "resources");
-const backendName = process.platform === "win32" ? "mitm-ag-backend.exe" : "mitm-ag-backend";
+
+function tauriTargetTriple() {
+    return process.env.MITM_TAURI_TARGET || process.env.CARGO_BUILD_TARGET || process.env.TAURI_TARGET_TRIPLE || "";
+}
+
+function isWindowsTarget(target = tauriTargetTriple()) {
+    return target ? target.includes("pc-windows") : process.platform === "win32";
+}
+
+function backendResourceName() {
+    return isWindowsTarget() ? "mitm-ag-backend.exe" : "mitm-ag-backend";
+}
+
+function pkgBuildScript() {
+    const target = tauriTargetTriple();
+    if (target.includes("pc-windows")) return "build:pkg:windows";
+    if (target.includes("unknown-linux")) return "build:pkg:linux";
+    if (target.includes("apple-darwin")) return "build:pkg:macos";
+    if (process.platform === "win32") return "build:pkg:windows";
+    if (process.platform === "linux") return "build:pkg:linux";
+    return "build:pkg:macos";
+}
 
 function resolvePkgBinaryName() {
-  // Khi Tauri build với --target (cross-compile), nó set CARGO_BUILD_TARGET.
-  // Dùng biến đó để chọn đúng backend binary thay vì dựa vào platform của máy host.
-  const target = process.env.CARGO_BUILD_TARGET || process.env.TAURI_TARGET_TRIPLE || "";
-  if (target) {
-    if (target.includes("aarch64-apple-darwin"))      return "mitm-antigravity-macos-arm64";
-    if (target.includes("x86_64-apple-darwin"))       return "mitm-antigravity-macos-x64";
-    if (target.includes("x86_64-pc-windows"))         return "mitm-antigravity-win-x64.exe";
-    if (target.includes("aarch64-pc-windows"))        return "mitm-antigravity-win-arm64.exe";
-    if (target.includes("x86_64-unknown-linux"))      return "mitm-antigravity-linux-x64";
-    if (target.includes("aarch64-unknown-linux"))     return "mitm-antigravity-linux-arm64";
-  }
-  // Fallback: native platform detection
-  const { platform, arch } = process;
-  if (platform === "win32")  return arch === "arm64" ? "mitm-antigravity-win-arm64.exe"  : "mitm-antigravity-win-x64.exe";
-  if (platform === "linux")  return arch === "arm64" ? "mitm-antigravity-linux-arm64"    : "mitm-antigravity-linux-x64";
-  return arch === "arm64" ? "mitm-antigravity-macos-arm64" : "mitm-antigravity-macos-x64";
+    // Khi cross-compile, wrapper script set target env để chọn đúng backend binary.
+    // Dùng biến đó để chọn đúng backend binary thay vì dựa vào platform của máy host.
+    const target = tauriTargetTriple();
+    if (target) {
+        if (target.includes("aarch64-apple-darwin")) return "mitm-antigravity-macos-arm64";
+        if (target.includes("x86_64-apple-darwin")) return "mitm-antigravity-macos-x64";
+        if (target.includes("x86_64-pc-windows")) return "mitm-antigravity-win-x64.exe";
+        if (target.includes("aarch64-pc-windows")) return "mitm-antigravity-win-arm64.exe";
+        if (target.includes("x86_64-unknown-linux")) return "mitm-antigravity-linux-x64";
+        if (target.includes("aarch64-unknown-linux")) return "mitm-antigravity-linux-arm64";
+    }
+    // Fallback: native platform detection
+    const { platform, arch } = process;
+    if (platform === "win32") return arch === "arm64" ? "mitm-antigravity-win-arm64.exe" : "mitm-antigravity-win-x64.exe";
+    if (platform === "linux") return arch === "arm64" ? "mitm-antigravity-linux-arm64" : "mitm-antigravity-linux-x64";
+    return arch === "arm64" ? "mitm-antigravity-macos-arm64" : "mitm-antigravity-macos-x64";
 }
 
 const sourceName = resolvePkgBinaryName();
 const sourcePath = path.join(distDir, sourceName);
-const targetPath = path.join(resourcesDir, backendName);
+const targetPath = path.join(resourcesDir, backendResourceName());
 
 if (!fs.existsSync(sourcePath)) {
     // Binary chưa có – tự build thay vì crash.
     // Chọn script build đúng platform để tránh download base binary không cần thiết.
     const { execSync } = require("child_process");
-    const pkgScript = process.platform === "win32" ? "build:pkg:windows"
-                    : process.platform === "linux"  ? "build:pkg:linux"
-                    : "build:pkg:macos";
+    const pkgScript = pkgBuildScript();
     console.log(`Backend binary not found. Building with npm run ${pkgScript} ...`);
     execSync(`npm run ${pkgScript}`, { stdio: "inherit", cwd: root });
     if (!fs.existsSync(sourcePath)) {
@@ -46,7 +65,7 @@ if (!fs.existsSync(sourcePath)) {
 
 fs.mkdirSync(resourcesDir, { recursive: true });
 fs.copyFileSync(sourcePath, targetPath);
-if (process.platform !== "win32") fs.chmodSync(targetPath, 0o755);
+if (!isWindowsTarget()) fs.chmodSync(targetPath, 0o755);
 
 const settingsSource = path.join(root, "settings.json");
 const settingsTarget = path.join(resourcesDir, "settings.json");

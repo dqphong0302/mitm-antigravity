@@ -10,7 +10,11 @@ function collectBodyRaw(req) {
 function readRequestJson(req) {
   return collectBodyRaw(req).then((body) => {
     if (!body.length) return {};
-    return JSON.parse(body.toString());
+    try {
+      return JSON.parse(body.toString());
+    } catch {
+      throw new Error(`Invalid JSON in request body (${body.length} bytes)`);
+    }
   });
 }
 

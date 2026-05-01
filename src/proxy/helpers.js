@@ -160,9 +160,11 @@ async function sendUpstreamErrorResponse(res, response) {
 
 
 async function retryWithBackoff(fetchFn, options) {
-    const maxRetries = Number(options.maxRetries || 0);
-    const retryDelay = Number(options.retryDelay || 1000);
-    const retryBackoff = Number(options.retryBackoff || 1);
+    // Guard NaN – nếu config invalid thì dùng safe defaults
+    const maxRetries  = Number.isFinite(Number(options.maxRetries))  ? Math.max(0, Number(options.maxRetries))  : 0;
+    const retryDelay  = Number.isFinite(Number(options.retryDelay))  ? Math.max(0, Number(options.retryDelay))  : 1000;
+    const retryBackoff = Number.isFinite(Number(options.retryBackoff)) && Number(options.retryBackoff) > 0
+      ? Number(options.retryBackoff) : 1;
     let lastError;
     let lastResponse;
 

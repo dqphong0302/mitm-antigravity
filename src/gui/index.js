@@ -32,13 +32,18 @@ const {
   generateCert,
   installCert,
   uninstallCert,
+  windowsBatchInstallCertAndHosts,
 } = require("../cert");
 const {
   addDNSEntries,
+  applyDnsEntriesToHostsContent,
   dnsConfiguredForHosts,
+  dnsEntriesForHosts,
   getRedirectIPs,
+  readHostsFileContent,
   removeDNSEntries,
 } = require("../dns");
+const { HOSTS_FILE } = require("../config/constants");
 const {
   autoStartStatus,
   checkProxyHealth,
@@ -55,6 +60,36 @@ const { createGuiRoutes, findGuiRoute } = require("./routes");
 
 function guiPresets() {
   return {};
+}
+
+// Windows: gộp cert install + hosts write + DNS flush vào 1 PowerShell elevated = 1 UAC prompt.
+// Trả về { cert, dns } giống như installCert và addDNSEntries riêng lẻ.
+async function applyWindowsSetup({ certCaPath, targetHosts, remoteHost, remoteIp }) {
+  const { resolveRemoteIP } = require("../dns");
+  // Tính IP cần redirect (nếu không có remoteIp, resolve từ remoteHost)
+  let ip = remoteIp;
+  if (!ip && remoteHost) {
+    const addrs = await resolveRemoteIP(remoteHost);
+    ip = addrs[0];
+  }
+  if (!ip) ip = require("../config/constants").DEFAULT_REMOTE;
+
+  const entries    = dnsEntriesForHosts(targetHosts, ip);
+  const currentContent = readHostsFileContent();
+  const { content: nextContent, replacedExisting } = applyDnsEntriesToHostsContent(currentContent, entries);
+
+  // 1 elevated PowerShell: cert + (hosts nếu cần thay đổi)
+  const hostsChanged = nextContent !== currentContent;
+  await windowsBatchInstallCertAndHosts({
+    certPath:     certCaPath,
+    hostsContent: hostsChanged ? nextContent : null,
+    hostsFile:    hostsChanged ? HOSTS_FILE : null,
+  });
+
+  return {
+    cert: { installed: true },
+    dns:  { added: !replacedExisting, results: entries.map((e) => ({ targetHost: e.targetHost, added: true, ip: e.ip })) },
+  };
 }
 
 function createRouteHandlers(options) {
@@ -159,13 +194,25 @@ async function handleStartProxy(req, res, options) {
   const targetHosts = targetHostsFrom(cfg);
   const sudoPassword = String(body.sudoPassword || "");
   const cert = await generateCert(targetHosts, { force: false, sudoPassword });
-  const certResult = await installCert(cert.ca, targetHosts[0], sudoPassword);
-  const dnsResult = await addDNSEntries({
-    targetHosts,
-    remoteHost: cfg.remoteHost || options.remoteHost,
-    remoteIp: cfg.remoteIp || options.remoteIp,
-    sudoPassword,
-  });
+
+  // Windows: gộp cert + DNS vào 1 UAC prompt duy nhất
+  let certResult, dnsResult;
+  if (IS_WIN) {
+    ({ cert: certResult, dns: dnsResult } = await applyWindowsSetup({
+      certCaPath: cert.ca,
+      targetHosts,
+      remoteHost: cfg.remoteHost || options.remoteHost,
+      remoteIp: cfg.remoteIp || options.remoteIp,
+    }));
+  } else {
+    certResult = await installCert(cert.ca, targetHosts[0], sudoPassword);
+    dnsResult = await addDNSEntries({
+      targetHosts,
+      remoteHost: cfg.remoteHost || options.remoteHost,
+      remoteIp: cfg.remoteIp || options.remoteIp,
+      sudoPassword,
+    });
+  }
   const nodeTrust = await applyAntigravityNodeTrust(cert.ca);
   const port = Number(cfg.port || options.port || 443);
   const targetHost = primaryTargetHost(cfg);
@@ -272,16 +319,28 @@ async function handleApplyDns(req, res, options) {
   const targetHosts = targetHostsFrom(cfg);
   const sudoPassword = String(body.sudoPassword || "");
   const cert = await generateCert(targetHosts, { force: false, sudoPassword });
-  const certResult = await installCert(cert.ca, targetHosts[0], sudoPassword);
   const nodeTrust = await applyAntigravityNodeTrust(cert.ca);
   const port = Number(cfg.port || options.port || 443);
   const targetHost = primaryTargetHost(cfg);
-  const dnsResult = await addDNSEntries({
-    targetHosts,
-    remoteHost: cfg.remoteHost || options.remoteHost,
-    remoteIp: cfg.remoteIp || options.remoteIp,
-    sudoPassword,
-  });
+
+  // Windows: 1 UAC duy nhất cho cert + DNS
+  let certResult, dnsResult;
+  if (IS_WIN) {
+    ({ cert: certResult, dns: dnsResult } = await applyWindowsSetup({
+      certCaPath: cert.ca,
+      targetHosts,
+      remoteHost: cfg.remoteHost || options.remoteHost,
+      remoteIp: cfg.remoteIp || options.remoteIp,
+    }));
+  } else {
+    certResult = await installCert(cert.ca, targetHosts[0], sudoPassword);
+    dnsResult = await addDNSEntries({
+      targetHosts,
+      remoteHost: cfg.remoteHost || options.remoteHost,
+      remoteIp: cfg.remoteIp || options.remoteIp,
+      sudoPassword,
+    });
+  }
   let proxy = { reloaded: false, wasRunning: false, port };
   if (await checkProxyHealth(port, targetHost)) {
     await stopProxyByPort({ sudoPassword, port, targetHost });

@@ -4,7 +4,14 @@ const path = require("path");
 
 const { IS_MAC, IS_WIN } = require("../config/constants");
 const { appDir, cliEntrypointPath, ensureAppDir, runtimeDir } = require("../config");
-const { execPowerShell, execPromise, execWithSudo, shellQuote } = require("./");
+const {
+    execPowerShell,
+    execPromise,
+    execWithSudo,
+    powershellSingleQuote,
+    shellQuote,
+    windowsCommandLineArguments,
+} = require("./");
 
 function xmlEscape(value) {
     return String(value || "").replace(/[<>&"']/g, (char) => ({
@@ -151,8 +158,8 @@ async function enableAutoStart() {
 
     if (IS_WIN) {
         const command = commandParts[0];
-        const args = commandParts.slice(1).join(" ");
-        await execPowerShell(`$action = New-ScheduledTaskAction -Execute '${command.replace(/'/g, "''")}' -Argument '${args.replace(/'/g, "''")}' -WorkingDirectory '${runtimeDir().replace(/'/g, "''")}'; $trigger = New-ScheduledTaskTrigger -AtLogOn; Register-ScheduledTask -TaskName '${autoStartName().replace(/'/g, "''")}' -Action $action -Trigger $trigger -Description 'Start MITM Antigravity proxy after login' -Force | Out-Null`, { elevated: true });
+        const args = windowsCommandLineArguments(commandParts.slice(1));
+        await execPowerShell(`$action = New-ScheduledTaskAction -Execute ${powershellSingleQuote(command)} -Argument ${powershellSingleQuote(args)} -WorkingDirectory ${powershellSingleQuote(runtimeDir())}; $trigger = New-ScheduledTaskTrigger -AtLogOn; Register-ScheduledTask -TaskName ${powershellSingleQuote(autoStartName())} -Action $action -Trigger $trigger -Description 'Start MITM Antigravity proxy after login' -Force | Out-Null`, { elevated: true });
         return { enabled: true, method: "Windows Scheduled Task", path: autoStartName() };
     }
 

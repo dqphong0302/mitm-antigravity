@@ -267,7 +267,14 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    const data = JSON.parse(fs.readFileSync(inputFile, "utf-8"));
+    let data;
+    try {
+      data = JSON.parse(fs.readFileSync(inputFile, "utf-8"));
+    } catch (err) {
+      console.error(`Failed to read config file: ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
     const imported = importConfig(data);
     console.log(JSON.stringify(redactConfig(imported), null, 2));
     console.log(`Config imported from ${inputFile}`);

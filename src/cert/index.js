@@ -4,9 +4,37 @@ const os = require("os");
 const path = require("path");
 const forge = require("node-forge");
 
-const { IS_MAC, IS_WIN } = require("../config/constants");
+const { DEFAULT_TARGET, IS_MAC, IS_WIN } = require("../config/constants");
 const { appDir, normalizeTargetHosts, targetHostsFrom } = require("../config");
 const { execPowerShell, execPromise, execWithSudo, shellQuote } = require("../system");
+
+const MAC_SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain";
+
+function macLoginKeychain() {
+  return path.join(os.homedir(), "Library", "Keychains", "login.keychain-db");
+}
+
+function macSystemTrustCommand(certPath) {
+  return [
+    "security add-trusted-cert",
+    "-d",
+    "-r trustRoot",
+    "-p ssl",
+    "-p basic",
+    `-k ${shellQuote(MAC_SYSTEM_KEYCHAIN)}`,
+    shellQuote(certPath),
+  ].join(" ");
+}
+
+function macCertTrustVerifyCommand(serverCertPath, targetHost = DEFAULT_TARGET) {
+  return [
+    "security verify-cert",
+    `-c ${shellQuote(serverCertPath)}`,
+    "-p ssl",
+    `-s ${shellQuote(targetHost || DEFAULT_TARGET)}`,
+    "-L",
+  ].join(" ");
+}
 
 function certDir() {
   return path.join(appDir(), "cert");
@@ -61,7 +89,9 @@ function certUsesLocalCA(certPath, caCertPath) {
 function getCertFingerprint(certPath) {
   const pem = fs.readFileSync(certPath, "utf-8");
   const der = Buffer.from(pem.replace(/-----[^-]+-----/g, "").replace(/\s/g, ""), "base64");
-  return crypto.createHash("sha1").update(der).digest("hex").toUpperCase().match(/.{2}/g).join(":");
+  const hex = crypto.createHash("sha1").update(der).digest("hex").toUpperCase();
+  // .match() có thể trả về null nếu hex rỗng – guard để tránh crash
+  return (hex.match(/.{2}/g) ?? []).join(":");
 }
 
 function getPemFingerprints(filePath) {
@@ -294,20 +324,10 @@ async function checkCertInstalled(certPath, targetHost) {
   if (!IS_MAC) return false;
 
   try {
-    const fingerprint = getCertFingerprint(certPath).replace(/:/g, "");
-    const keychains = [
-      "/Library/Keychains/System.keychain",
-      path.join(os.homedir(), "Library", "Keychains", "login.keychain-db"),
-    ];
-    for (const keychain of keychains) {
-      try {
-        await execPromise(`security find-certificate -a -Z ${shellQuote(keychain)} | grep -i "${fingerprint}"`);
-        return true;
-      } catch {
-        // Continue checking other keychains.
-      }
-    }
-    return false;
+    const { certPath: serverCertPath } = certPaths();
+    if (!fs.existsSync(serverCertPath) || !certUsesLocalCA(serverCertPath, certPath)) return false;
+    await execPromise(macCertTrustVerifyCommand(serverCertPath, targetHost));
+    return true;
   } catch {
     return false;
   }
@@ -317,6 +337,29 @@ async function checkCertInstalled(certPath, targetHost) {
 // Thay vì crash, trả về { unsupported: true } để caller biết cần hướng dẫn thủ công.
 function linuxCertHint() {
   return "On Linux, trust the CA manually: sudo cp <ca.crt> /usr/local/share/ca-certificates/ && sudo update-ca-certificates";
+}
+
+// Gộp cert install + hosts write + DNS flush thành 1 elevated script = 1 UAC prompt.
+// hostsContent và hostsPath là optional: nếu truyền vào sẽ ghi hosts cùng lúc.
+async function windowsBatchInstallCertAndHosts({ certPath, hostsContent, hostsFile }) {
+  const tempHosts = hostsContent
+    ? require("path").join(require("os").tmpdir(), `mitm-hosts-batch-${process.pid}-${Date.now()}.tmp`)
+    : null;
+  if (tempHosts) require("fs").writeFileSync(tempHosts, hostsContent, { mode: 0o600 });
+
+  const ps = [
+    // Cài cert vào LocalMachine\\Root
+    `certutil -addstore Root '${certPath.replace(/'/g, "''")}' | Out-Null`,
+  ];
+  if (tempHosts && hostsFile) {
+    ps.push(
+      `Copy-Item -LiteralPath '${tempHosts.replace(/'/g, "''")}' -Destination '${hostsFile.replace(/'/g, "''")}' -Force`,
+      `ipconfig /flushdns | Out-Null`,
+      `Remove-Item -Path '${tempHosts.replace(/'/g, "''")}' -Force -ErrorAction SilentlyContinue`,
+    );
+  }
+  await execPowerShell(ps.join("; "), { elevated: true });
+  if (tempHosts) { try { require("fs").unlinkSync(tempHosts); } catch { /* best effort */ } }
 }
 
 async function installCert(certPath, targetHost, sudoPassword) {
@@ -329,9 +372,19 @@ async function installCert(certPath, targetHost, sudoPassword) {
   }
 
   if (IS_MAC) {
-    const command = `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ${shellQuote(certPath)}`;
-    await execWithSudo(command, sudoPassword);
-    return { installed: true };
+    const systemCommand = macSystemTrustCommand(certPath);
+    try {
+      await execWithSudo(systemCommand, sudoPassword);
+      return { installed: true, keychain: "system", trustPolicies: ["ssl", "basic"] };
+    } catch (systemError) {
+      throw new Error(
+        [
+          "Failed to trust the certificate in the macOS System keychain.",
+          "Run from the GUI and approve the administrator prompt, or run the CLI with --password.",
+          `System keychain error: ${systemError.message}`,
+        ].join("\n")
+      );
+    }
   }
 
   // Linux – trả về unsupported thay vì throw để flow GUI tiếp tục
@@ -350,8 +403,18 @@ async function uninstallCert(certPath, targetHost, sudoPassword) {
 
   if (IS_MAC) {
     const fingerprint = getCertFingerprint(certPath).replace(/:/g, "");
-    const command = `security delete-certificate -Z "${fingerprint}" /Library/Keychains/System.keychain`;
-    await execWithSudo(command, sudoPassword);
+    const loginCommand = `security delete-certificate -Z "${fingerprint}" ${shellQuote(macLoginKeychain())}`;
+    try {
+      await execPromise(loginCommand);
+    } catch {
+      // Certificate may only exist in System.keychain.
+    }
+    const command = `security delete-certificate -Z "${fingerprint}" ${shellQuote(MAC_SYSTEM_KEYCHAIN)}`;
+    try {
+      await execWithSudo(command, sudoPassword);
+    } catch {
+      // User keychain removal is enough for the non-admin GUI install path.
+    }
     return { removed: true };
   }
 
@@ -373,5 +436,8 @@ module.exports = {
   getPemFingerprints,
   installCert,
   isAntigravityRunning,
+  macCertTrustVerifyCommand,
+  macSystemTrustCommand,
   uninstallCert,
+  windowsBatchInstallCertAndHosts,
 };

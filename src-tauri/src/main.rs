@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env,
     fs::OpenOptions,
     io::{Read, Write},
@@ -11,16 +12,18 @@ use std::{
 };
 
 use tauri::Manager;
+use tauri::Url;
 use tauri_plugin_updater::UpdaterExt;
 
 fn js_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
-     .replace('`',  "\\`")
-     .replace('$',  "\\$")
+        .replace('`', "\\`")
+        .replace('$', "\\$")
 }
 
 const GUI_ADDR: &str = "127.0.0.1:20245";
 const GUI_URL: &str = "http://127.0.0.1:20245/";
+const GUI_PORT: &str = "20245";
 
 struct BackendProcess(Arc<Mutex<Option<Child>>>);
 
@@ -30,6 +33,13 @@ fn backend_log_path() -> PathBuf {
 
 fn proxy_log_path() -> PathBuf {
     env::temp_dir().join("mitm-antigravity-proxy.log")
+}
+
+fn append_startup_log(level: &str, message: &str) {
+    let path = backend_log_path();
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "[tauri:{level}] {message}");
+    }
 }
 
 fn resource_path(app: &tauri::App, name: &str) -> Result<PathBuf, String> {
@@ -83,6 +93,105 @@ fn start_backend(app: &tauri::App) -> Result<BackendProcess, String> {
     Ok(BackendProcess(Arc::new(Mutex::new(Some(child)))))
 }
 
+#[cfg(unix)]
+fn gui_port_owner_pids() -> Vec<u32> {
+    let Ok(output) = Command::new("lsof")
+        .args(["-nP", &format!("-tiTCP:{GUI_PORT}"), "-sTCP:LISTEN"])
+        .output()
+    else {
+        return Vec::new();
+    };
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .filter(|pid| *pid != std::process::id())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+#[cfg(windows)]
+fn gui_port_owner_pids() -> Vec<u32> {
+    let Ok(output) = Command::new("netstat").args(["-ano", "-p", "tcp"]).output() else {
+        return Vec::new();
+    };
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.contains("LISTENING"))
+        .filter(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            fields
+                .get(1)
+                .is_some_and(|local| local.ends_with(&format!(":{GUI_PORT}")))
+        })
+        .filter_map(|line| line.split_whitespace().last()?.parse::<u32>().ok())
+        .filter(|pid| *pid != std::process::id())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn wait_until_gui_port_free() -> bool {
+    for _ in 0..20 {
+        if gui_port_owner_pids().is_empty() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+fn free_gui_port() {
+    let pids = gui_port_owner_pids();
+    if pids.is_empty() {
+        return;
+    }
+
+    append_startup_log(
+        "info",
+        &format!("Freeing GUI port {GUI_PORT}; terminating owners: {pids:?}"),
+    );
+
+    #[cfg(unix)]
+    {
+        for pid in &pids {
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .status();
+        }
+        if !wait_until_gui_port_free() {
+            for pid in gui_port_owner_pids() {
+                let _ = Command::new("kill")
+                    .args(["-KILL", &pid.to_string()])
+                    .status();
+            }
+            let _ = wait_until_gui_port_free();
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        for pid in &pids {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .status();
+        }
+        let _ = wait_until_gui_port_free();
+    }
+
+    let remaining = gui_port_owner_pids();
+    if remaining.is_empty() {
+        append_startup_log("info", &format!("GUI port {GUI_PORT} is free"));
+    } else {
+        append_startup_log(
+            "warn",
+            &format!("GUI port {GUI_PORT} is still occupied by: {remaining:?}"),
+        );
+    }
+}
+
 fn read_gui_probe() -> Option<String> {
     let mut stream = TcpStream::connect(GUI_ADDR).ok()?;
     let timeout = Some(Duration::from_millis(350));
@@ -103,7 +212,7 @@ fn is_mitm_gui_server() -> bool {
     read_gui_probe().is_some_and(|response| {
         response.starts_with("HTTP/1.1 200")
             && response.contains("\"antigravityAliases\"")
-            && response.contains("\"settingsPath\"")
+            && (response.contains("\"configPath\"") || response.contains("\"settingsPath\""))
     })
 }
 
@@ -117,19 +226,51 @@ fn wait_for_gui() -> bool {
     false
 }
 
+fn backend_error_script(log_path: &str) -> String {
+    let log_path = js_escape(log_path);
+    format!(
+        r#"(function(){{
+  var target = '{GUI_URL}';
+  function retry() {{
+    fetch(target + 'api/bootstrap', {{ cache: 'no-store' }})
+      .then(function(response) {{
+        if (response.ok) window.location.replace(target);
+      }})
+      .catch(function() {{}});
+  }}
+  document.body.innerHTML = `<main style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:28px;color:#f8fafc;background:#111827;min-height:100vh">
+    <h1>Backend did not start</h1>
+    <p>MITM AG is freeing port {GUI_PORT} and waiting for the backend. This page will open automatically when it is ready.</p>
+    <pre style="white-space:pre-wrap;word-break:break-all;background:#020617;border:1px solid #334155;border-radius:8px;padding:12px">{log_path}</pre>
+  </main>`;
+  retry();
+  setInterval(retry, 750);
+}})();"#
+    )
+}
+
+fn navigate_to_gui(window: &tauri::WebviewWindow) {
+    if let Ok(url) = Url::parse(GUI_URL) {
+        let _ = window.navigate(url);
+    }
+}
+
 fn check_for_updates(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         // Kiểm tra update trong background – không block UI
         let Ok(updater) = app.updater() else { return };
-        let Ok(Some(update)) = updater.check().await else { return };
+        let Ok(Some(update)) = updater.check().await else {
+            return;
+        };
 
         let version = js_escape(&update.version);
-        let repo    = "https://github.com/dqphong0302/mitm-antigravity/releases/latest";
+        let repo = "https://github.com/dqphong0302/mitm-antigravity/releases/latest";
 
         // Inject banner vào GUI – không cần plugin dialog
         // Người dùng tự click "Download" để tải bản mới từ GitHub Releases.
         if let Some(window) = app.get_webview_window("main") {
-            let script = format!(r#"(function(){{
+            let script = format!(
+                r#"(function(){{
   if(document.getElementById('mitm-update-banner'))return;
   var b=document.createElement('div');
   b.id='mitm-update-banner';
@@ -138,7 +279,8 @@ fn check_for_updates(app: tauri::AppHandle) {
     +'<span><a href="`{repo}`" target="_blank" style="color:#fff;font-weight:700;margin-right:12px;">Download</a>'
     +'<button onclick="this.closest(\'#mitm-update-banner\').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;padding:3px 10px;cursor:pointer;border-radius:4px;">✕</button></span>';
   document.body.prepend(b);
-}})();"#);
+}})();"#
+            );
             let _ = window.eval(&script);
         }
     });
@@ -148,11 +290,8 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let backend = if is_mitm_gui_server() {
-                BackendProcess(Arc::new(Mutex::new(None)))
-            } else {
-                start_backend(app)?
-            };
+            free_gui_port();
+            let backend = start_backend(app)?;
             app.manage(backend);
 
             // Kiểm tra update sau khi window load xong (fire-and-forget)
@@ -160,13 +299,13 @@ fn main() {
 
             if let Some(window) = app.get_webview_window("main") {
                 if wait_for_gui() {
-                    let _ = window.eval(&format!("window.location.replace('{}')", GUI_URL));
+                    navigate_to_gui(&window);
                 } else {
                     let log_path = backend_log_path()
                         .to_string_lossy()
                         .replace('\\', "\\\\")
                         .replace('\'', "\\'");
-                    let _ = window.eval(&format!("document.body.innerHTML = '<main style=\"font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:28px;color:#f8fafc;background:#111827;min-height:100vh\"><h1>Backend did not start</h1><p>Close and reopen MITM AG, ensure port 20245 is free, or inspect the backend log:</p><pre style=\"white-space:pre-wrap;word-break:break-all;background:#020617;border:1px solid #334155;border-radius:8px;padding:12px\">{}</pre></main>'", log_path));
+                    let _ = window.eval(&backend_error_script(&log_path));
                 }
             }
             Ok(())
