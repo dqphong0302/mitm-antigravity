@@ -1,6 +1,6 @@
 {
   "name": "mitm-antigravity",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "description": "Cross-platform Antigravity MITM app with configurable DNS, endpoint, API key and model mapping",
   "type": "commonjs",

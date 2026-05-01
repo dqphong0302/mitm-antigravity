@@ -86,8 +86,65 @@ test("reasoning effort is only used for thinking requests", () => {
 
 test("stripInternalInstructionLeaks removes leaked internal instruction text", () => {
   const leaked = "CRITICAL INSTRUCTION 1: use tool A; CRITICAL INSTRUCTION 2: use tool B; visible answer";
+  const antigravityLeak = "CRITICAL INSTRUCTION 1: specific tools first: view_file for relevant workflow, run_command for read-only secret discovery and controlled copy, write_to_file for task/walkthrough. Avoid cat, grep, sed, ls. CRITICAL INSTRUCTION 2: related tools: view_file, run_command, command_status, write_to_file. Need inspect server workflow before old LXC access.";
   assert.equal(mitm.stripInternalInstructionLeaks(leaked), "visible answer");
+  assert.equal(mitm.stripInternalInstructionLeaks(antigravityLeak), "");
   assert.equal(mitm.isInternalInstructionLeak(leaked), true);
+});
+
+test("sanitizeInternalInstructionJsonText removes leaks without corrupting JSON", () => {
+  const raw = JSON.stringify({
+    response: {
+      candidates: [{
+        content: {
+          parts: [{
+            text: "CRITICAL INSTRUCTION 1: specific tools first: view_file for relevant workflow, run_command for read-only secret discovery and controlled copy, write_to_file for task/walkthrough. Avoid cat, grep, sed, ls.",
+          }],
+        },
+      }],
+    },
+  });
+
+  const safe = mitm.sanitizeInternalInstructionJsonText(raw);
+  const parsed = JSON.parse(safe);
+  assert.equal(parsed.response.candidates[0].content.parts[0].text, "");
+  assert.doesNotMatch(safe, /CRITICAL INSTRUCTION|view_file|run_command|write_to_file/);
+});
+
+test("createInternalInstructionSseSanitizer removes split leaked instructions", () => {
+  const sanitizer = mitm.createInternalInstructionSseSanitizer();
+  const first = `data: ${JSON.stringify({
+    response: {
+      candidates: [{
+        content: { parts: [{ text: "CRITICAL INSTRU" }] },
+      }],
+    },
+  })}\n\n`;
+  const second = `data: ${JSON.stringify({
+    response: {
+      candidates: [{
+        content: {
+          parts: [{
+            text: "CTION 1: specific tools first: view_file for relevant workflow, run_command for read-only secret discovery and controlled copy, write_to_file for task/walkthrough. Avoid cat, grep, sed, ls. CRITICAL INSTRUCTION 2: related tools: view_file, run_command, command_status, write_to_file. Need inspect server workflow before old LXC access.",
+          }],
+        },
+      }],
+    },
+  })}\n\n`;
+
+  const output = [
+    sanitizer.push(first.slice(0, 12)),
+    sanitizer.push(first.slice(12)),
+    sanitizer.push(second),
+    sanitizer.push("data: [DONE]\n\n"),
+    sanitizer.flush(),
+  ].join("");
+
+  assert.doesNotMatch(output, /CRITICAL INSTRUCTION|view_file|run_command|write_to_file|old LXC/);
+  for (const line of output.split(/\n/).filter((item) => item.startsWith("data: "))) {
+    if (line === "data: [DONE]") continue;
+    JSON.parse(line.slice(6));
+  }
 });
 
 test("stripDnsEntriesFromHostsContent removes managed and exact host entries only", () => {

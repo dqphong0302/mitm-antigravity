@@ -35,6 +35,10 @@ const {
 
 // ─── Responses API helpers (for GPT / Responses API models) ────────────────
 
+const INTERNAL_INSTRUCTION_MARKER_RE = /CRITICAL\s+INSTRUCTION\s+\d+\s*:/i;
+const INTERNAL_INSTRUCTION_PREFIX = "CRITICAL INSTRUCTION ";
+const TEXT_PAYLOAD_KEYS = new Set(["content", "delta", "message", "output_text", "text"]);
+
 /** GPT model names (or legacy cx/ prefix) → OpenAI Responses API instead of chat/completions */
 function isGptResponsesModel(modelName) {
   const normalized = String(modelName || "").toLowerCase();
@@ -42,15 +46,186 @@ function isGptResponsesModel(modelName) {
 }
 
 function isInternalInstructionLeak(text) {
-  return /(^|\n)\s*CRITICAL INSTRUCTION\s+\d+:/i.test(String(text || ""));
+  return INTERNAL_INSTRUCTION_MARKER_RE.test(String(text || ""));
+}
+
+function isInternalInstructionMarkerPrefix(value) {
+  const upper = String(value || "").toUpperCase();
+  if (!upper) return false;
+  if (INTERNAL_INSTRUCTION_PREFIX.startsWith(upper)) return true;
+  if (!upper.startsWith(INTERNAL_INSTRUCTION_PREFIX)) return false;
+  return /^\d{0,6}\s*:?\s*$/.test(upper.slice(INTERNAL_INSTRUCTION_PREFIX.length));
+}
+
+function internalInstructionMarkerPrefixSuffixLength(value) {
+  const text = String(value || "");
+  const maxLength = Math.min(text.length, INTERNAL_INSTRUCTION_PREFIX.length + 10);
+  for (let length = maxLength; length > 0; length -= 1) {
+    if (isInternalInstructionMarkerPrefix(text.slice(-length))) return length;
+  }
+  return 0;
+}
+
+function internalInstructionBoundaryIndex(value) {
+  const text = String(value || "");
+  const semicolon = text.indexOf(";");
+  const blankLine = text.search(/\r?\n\s*\r?\n/);
+  if (semicolon === -1) return blankLine;
+  if (blankLine === -1) return semicolon;
+  return Math.min(semicolon, blankLine);
+}
+
+function createInternalInstructionTextSanitizer() {
+  let pending = "";
+  let suppressing = false;
+
+  function push(value) {
+    pending += String(value || "");
+    let output = "";
+
+    while (pending) {
+      if (suppressing) {
+        const boundary = internalInstructionBoundaryIndex(pending);
+        if (boundary === -1) {
+          pending = "";
+          return output;
+        }
+        pending = pending.slice(boundary + 1).replace(/^\s+/, "");
+        suppressing = false;
+        continue;
+      }
+
+      const match = INTERNAL_INSTRUCTION_MARKER_RE.exec(pending);
+      if (!match) {
+        const suffixLength = internalInstructionMarkerPrefixSuffixLength(pending);
+        const emitLength = pending.length - suffixLength;
+        output += pending.slice(0, emitLength);
+        pending = pending.slice(emitLength);
+        return output;
+      }
+
+      output += pending.slice(0, match.index).replace(/[;\s]+$/, (trimmed) => trimmed.includes("\n") ? "\n" : "");
+      pending = pending.slice(match.index + match[0].length);
+      suppressing = true;
+    }
+
+    return output;
+  }
+
+  function flush() {
+    if (suppressing) {
+      pending = "";
+      suppressing = false;
+      return "";
+    }
+    const output = pending;
+    pending = "";
+    return output;
+  }
+
+  return { push, flush };
 }
 
 function stripInternalInstructionLeaks(text) {
-  return String(text || "")
-    .replace(/(^|[;\n]\s*)CRITICAL INSTRUCTION\s+\d+:.*?(?=;|\n\s*(?:data:|\{|\[DONE\])|$)/gis, "$1")
-    .replace(/;?\s*CRITICAL INSTRUCTION\s+\d+:.*?(?=;|$)/gis, "")
-    .replace(/^(?:\s*;\s*)+/, "")
-    .trimStart();
+  const sanitizer = createInternalInstructionTextSanitizer();
+  return (sanitizer.push(text) + sanitizer.flush()).trimStart();
+}
+
+function shouldSanitizeStringKey(key) {
+  return TEXT_PAYLOAD_KEYS.has(String(key || ""));
+}
+
+function sanitizeInternalInstructionValue(value, sanitizer, key = "") {
+  if (typeof value === "string") {
+    if (!shouldSanitizeStringKey(key)) return value;
+    return sanitizer.push(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeInternalInstructionValue(item, sanitizer));
+  }
+  if (value && typeof value === "object") {
+    const result = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      result[childKey] = sanitizeInternalInstructionValue(childValue, sanitizer, childKey);
+    }
+    return result;
+  }
+  return value;
+}
+
+function sanitizeInternalInstructionJsonText(text) {
+  const sanitizer = createInternalInstructionTextSanitizer();
+  try {
+    const parsed = JSON.parse(String(text || ""));
+    const sanitized = sanitizeInternalInstructionValue(parsed, sanitizer);
+    sanitizer.flush();
+    return JSON.stringify(sanitized);
+  } catch {
+    return stripInternalInstructionLeaks(text);
+  }
+}
+
+function sanitizeInternalInstructionSseEvent(event, sanitizer) {
+  const lines = String(event || "").split(/\r?\n/);
+  const dataLines = [];
+  const otherLines = [];
+
+  for (const line of lines) {
+    if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+    else if (line) otherLines.push(line);
+  }
+
+  if (dataLines.length === 0) return event;
+
+  const data = dataLines.join("\n");
+  if (data === "[DONE]" || data === "null") {
+    return [...otherLines, `data: ${data}`].join("\n");
+  }
+
+  try {
+    const parsed = JSON.parse(data);
+    const sanitized = sanitizeInternalInstructionValue(parsed, sanitizer);
+    return [...otherLines, `data: ${JSON.stringify(sanitized)}`].join("\n");
+  } catch {
+    return [...otherLines, `data: ${sanitizer.push(data)}`].join("\n");
+  }
+}
+
+function nextSseEventBoundary(text) {
+  const lf = text.indexOf("\n\n");
+  const crlf = text.indexOf("\r\n\r\n");
+  if (lf === -1) return crlf === -1 ? null : { index: crlf, length: 4 };
+  if (crlf === -1) return { index: lf, length: 2 };
+  return lf < crlf ? { index: lf, length: 2 } : { index: crlf, length: 4 };
+}
+
+function createInternalInstructionSseSanitizer() {
+  let buffer = "";
+  const sanitizer = createInternalInstructionTextSanitizer();
+
+  function push(chunk) {
+    buffer += String(chunk || "");
+    let output = "";
+
+    while (true) {
+      const boundary = nextSseEventBoundary(buffer);
+      if (!boundary) break;
+      const event = buffer.slice(0, boundary.index);
+      buffer = buffer.slice(boundary.index + boundary.length);
+      output += `${sanitizeInternalInstructionSseEvent(event, sanitizer)}\n\n`;
+    }
+
+    return output;
+  }
+
+  function flush() {
+    const output = buffer ? sanitizeInternalInstructionSseEvent(buffer, sanitizer) : "";
+    buffer = "";
+    sanitizer.flush();
+    return output;
+  }
+
+  return { push, flush };
 }
 
 function normalizeReasoningEffort(value, options = {}) {
@@ -533,18 +708,44 @@ async function runProxy(options) {
       res.writeHead(response.status, responseHeaders);
 
       if (!response.body) {
-        res.end(stripInternalInstructionLeaks(await response.text().catch(() => "")));
+        const raw = await response.text().catch(() => "");
+        const safeBody = contentType.includes("json")
+          ? sanitizeInternalInstructionJsonText(raw)
+          : stripInternalInstructionLeaks(raw);
+        res.end(safeBody);
         return;
       }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) { res.end(); break; }
-        const chunk = decoder.decode(value, { stream: true });
-        const safeChunk = stripInternalInstructionLeaks(chunk);
-        if (safeChunk) res.write(Buffer.from(safeChunk));
+      if (contentType.includes("text/event-stream")) {
+        const sseSanitizer = createInternalInstructionSseSanitizer();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const safeChunk = sseSanitizer.push(decoder.decode(value, { stream: true }));
+          if (safeChunk) res.write(Buffer.from(safeChunk));
+        }
+        const decodedTail = decoder.decode();
+        if (decodedTail) {
+          const safeTailChunk = sseSanitizer.push(decodedTail);
+          if (safeTailChunk) res.write(Buffer.from(safeTailChunk));
+        }
+        const tail = sseSanitizer.flush();
+        if (tail) res.write(Buffer.from(tail));
+        res.end();
+      } else {
+        let raw = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          raw += decoder.decode(value, { stream: true });
+        }
+        raw += decoder.decode();
+        const safeBody = contentType.includes("json")
+          ? sanitizeInternalInstructionJsonText(raw)
+          : stripInternalInstructionLeaks(raw);
+        res.end(safeBody);
       }
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -625,6 +826,8 @@ module.exports = {
   isGptResponsesModel,
   isInternalInstructionLeak,
   stripInternalInstructionLeaks,
+  sanitizeInternalInstructionJsonText,
+  createInternalInstructionSseSanitizer,
   normalizeReasoningEffort,
   inferReasoningEffort,
   adaptiveGptModelForReasoning,
