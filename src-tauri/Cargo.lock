@@ -1912,7 +1912,7 @@ dependencies = [
 
 [[package]]
 name = "mitm-ag-tauri"
-version = "0.2.4"
+version = "0.5.0"
 dependencies = [
  "serde_json",
  "tauri",

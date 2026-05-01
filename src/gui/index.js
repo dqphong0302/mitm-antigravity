@@ -588,15 +588,9 @@ async function startGuiServer(options = {}) {
   console.log(`GUI ready at ${url}`);
   appendLog("info", "GUI backend ready", { url });
 
-  // Windows: refresh Scheduled Task path mỗi khi GUI khởi động.
-  // Đảm bảo autostart task luôn trỏ đúng binary sau khi cập nhật app.
-  if (IS_WIN) {
-    // windowsRefreshAutoStartPath được re-export qua proxy/control → autostart
-    const ctrl = require("../proxy/control");
-    if (typeof ctrl.windowsRefreshAutoStartPath === "function") {
-      ctrl.windowsRefreshAutoStartPath().catch(() => { /* best-effort */ });
-    }
-  }
+  // NOTE: windowsRefreshAutoStartPath đã bị bỏ khỏi đây vì nó trigger UAC mỗi lần
+  // người dùng mở app (rất khó chịu). Path của Scheduled Task được refresh tự động
+  // khi user click "Enable Auto Start" lại sau khi cập nhật app.
 
   return { server, url, port: uiPort };
 }

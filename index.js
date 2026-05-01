@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-const { main } = require("./src/cli");
+const { main } = require("./src/cli/commands");
 
 // Global safety nets: log errors and prevent silent crashes.
 process.on("uncaughtException", (error) => {
   try {
-    const { appendLog, errorMeta } = require("./src/logging");
+    const { appendLog, errorMeta } = require("./src/system/logging");
     appendLog("error", "Uncaught exception", errorMeta(error));
   } catch {
     // Keep error logging best-effort.
@@ -17,7 +17,7 @@ process.on("uncaughtException", (error) => {
 
 process.on("unhandledRejection", (reason) => {
   try {
-    const { appendLog, errorMeta } = require("./src/logging");
+    const { appendLog, errorMeta } = require("./src/system/logging");
     const error = reason instanceof Error ? reason : new Error(String(reason));
     appendLog("error", "Unhandled rejection", errorMeta(error));
   } catch {
@@ -29,7 +29,7 @@ process.on("unhandledRejection", (reason) => {
 if (require.main === module) {
   main().catch((err) => {
     try {
-      const { appendLog, errorMeta } = require("./src/logging");
+      const { appendLog, errorMeta } = require("./src/system/logging");
       appendLog("error", "CLI fatal error", errorMeta(err));
     } catch {
       // Keep fatal error handling best-effort.

@@ -178,18 +178,19 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
     const windowsArgs = process.pkg
       ? ["start", "--skip-setup", "--port", String(Number(port))]
       : [cliEntrypointPath(), "start", "--skip-setup", "--port", String(Number(port))];
-    // Dùng wrapper script để: (1) chạy hidden – không hiện console window,
-    // (2) redirect stdout/stderr ra log file để debug được.
-    // -RedirectStandardOutput không dùng được cùng -Verb RunAs nên dùng cmd /c redirect.
-    const cmdLine = [
-      `"${process.execPath.replace(/"/g, '""')}"`,
-      ...windowsArgs.map((a) => windowsCommandLineArgument(a)),
-    ].join(" ");
+    // Dùng cmd /c để: (1) chạy hidden, (2) redirect stdout/stderr ra log file.
+    // QUAN TRỌNG: KHÔNG bọc thêm outer quotes xung quanh cmdLine trong /c argument
+    // vì cmd.exe sẽ parse nhầm khi binary path đã có quotes bên trong.
+    // Đúng:   cmd /c "C:\binary.exe" arg1 arg2 >> logfile
+    // Sai:    cmd /c ""C:\binary.exe" arg1 arg2" >> logfile  ← double-quote conflict
+    const binaryQ = `"${process.execPath.replace(/"/g, '""')}"`;
+    const argsStr  = windowsCommandLineArguments(windowsArgs);
+    const logQ     = `"${logPath.replace(/"/g, '""')}"`;
+    const cmdArg   = `/c ${binaryQ} ${argsStr} >> ${logQ} 2>&1`;
     const psScript = [
-      `$logPath = ${powershellSingleQuote(logPath)}`,
       `$workDir = ${powershellSingleQuote(runtimeDir())}`,
       `Start-Process -FilePath 'cmd.exe'`,
-      `  -ArgumentList ${powershellSingleQuote(`/c "${cmdLine}" >> "${logPath.replace(/"/g, '""')}" 2>&1`)}`,
+      `  -ArgumentList ${powershellSingleQuote(cmdArg)}`,
       `  -WorkingDirectory $workDir`,
       `  -WindowStyle Hidden`,
     ].join(" `\n");
