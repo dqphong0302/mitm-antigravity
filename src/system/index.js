@@ -5,6 +5,17 @@ const path = require("path");
 
 const { IS_MAC, IS_WIN } = require("../config/constants");
 
+function safeChildProcessEnv(env = process.env) {
+  const next = { ...env };
+  if (process.pkg) {
+    // pkg injects PKG_EXECPATH into child_process calls. When a packaged
+    // backend launches itself with CLI args, that makes "start" look like a
+    // JS entrypoint path instead of an app command.
+    next.PKG_EXECPATH = "";
+  }
+  return next;
+}
+
 function isRoot() {
   return typeof process.getuid === "function" && process.getuid() === 0;
 }
@@ -18,11 +29,21 @@ function openBrowser(url) {
 
 function execPromise(command, { timeout = 30_000 } = {}) {
   return new Promise((resolve, reject) => {
-    exec(command, { timeout }, (error, stdout, stderr) => {
+    exec(command, { timeout, env: safeChildProcessEnv() }, (error, stdout, stderr) => {
       if (error) reject(new Error(stderr || error.message));
       else resolve(stdout);
     });
   });
+}
+
+async function isWindowsElevated() {
+  if (!IS_WIN) return false;
+  try {
+    await execPromise("net session");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function shellQuote(value) {
@@ -64,6 +85,14 @@ function windowsCommandLineArguments(args) {
   return args.map((arg) => windowsCommandLineArgument(arg)).join(" ");
 }
 
+function windowsCmdRedirectArguments(filePath, args, logPath) {
+  const binary = `"${String(filePath).replace(/"/g, '""')}"`;
+  const log = `"${String(logPath).replace(/"/g, '""')}"`;
+  const argText = windowsCommandLineArguments(args || []);
+  const command = `${binary}${argText ? ` ${argText}` : ""} >> ${log} 2>&1`;
+  return `/s /c "${command}"`;
+}
+
 function execWithSudo(command, password) {
   if (isRoot()) return execPromise(command);
   if (password) {
@@ -101,7 +130,7 @@ function execPowerShell(script, { elevated = false } = {}) {
     const encoded = Buffer.from(script, "utf16le").toString("base64");
     const command = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
     return new Promise((resolve, reject) => {
-      exec(command, { timeout: 30_000 }, (error, stdout, stderr) => {
+      exec(command, { timeout: 30_000, env: safeChildProcessEnv() }, (error, stdout, stderr) => {
         if (error) reject(new Error(stderr || error.message));
         else resolve(stdout);
       });
@@ -126,10 +155,30 @@ function execPowerShell(script, { elevated = false } = {}) {
   ].join("; ");
 
   const encoded = Buffer.from(wrapped, "utf16le").toString("base64");
-  const elevatedCmd = `powershell -NoProfile -Command "Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}') -Verb RunAs -Wait"`;
+  const powershellPath = path.join(
+    process.env.SystemRoot || "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe"
+  );
+  const elevatedArgs = `-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+  const launcher = [
+    `$psi = [System.Diagnostics.ProcessStartInfo]::new()`,
+    `$psi.FileName = ${powershellSingleQuote(powershellPath)}`,
+    `$psi.Arguments = ${powershellSingleQuote(elevatedArgs)}`,
+    `$psi.UseShellExecute = $true`,
+    `$psi.Verb = 'runas'`,
+    `$psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden`,
+    `$p = [System.Diagnostics.Process]::Start($psi)`,
+    `$p.WaitForExit()`,
+    `exit $p.ExitCode`,
+  ].join("; ");
+  const launcherEncoded = Buffer.from(launcher, "utf16le").toString("base64");
+  const elevatedCmd = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${launcherEncoded}`;
 
   return new Promise((resolve, reject) => {
-    exec(elevatedCmd, { timeout: 120_000 }, (error, stdout, stderr) => {
+    exec(elevatedCmd, { timeout: 120_000, env: safeChildProcessEnv() }, (error, stdout, stderr) => {
       let captured = "";
       try {
         if (fs.existsSync(outFile)) {
@@ -151,10 +200,13 @@ module.exports = {
   execPowerShell,
   execPromise,
   execWithSudo,
+  isWindowsElevated,
   isRoot,
   openBrowser,
   powershellSingleQuote,
+  safeChildProcessEnv,
   shellQuote,
+  windowsCmdRedirectArguments,
   windowsCommandLineArgument,
   windowsCommandLineArguments,
 };

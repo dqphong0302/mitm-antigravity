@@ -342,5 +342,6 @@ module.exports = {
   readHostsFileContent,
   removeDNSEntries,
   removeDNSEntry,
+  resolveRemoteIP,
   stripDnsEntriesFromHostsContent,
 };

@@ -1,0 +1,14 @@
+D:\mitm-antigravity\target-gui-test\x86_64-pc-windows-msvc\release\deps\serde-80883d34cbfeb3cb.d: C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs D:\mitm-antigravity\target-gui-test\x86_64-pc-windows-msvc\release\build\serde-9e863a5f231afc52\out/private.rs
+
+D:\mitm-antigravity\target-gui-test\x86_64-pc-windows-msvc\release\deps\libserde-80883d34cbfeb3cb.rlib: C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs D:\mitm-antigravity\target-gui-test\x86_64-pc-windows-msvc\release\build\serde-9e863a5f231afc52\out/private.rs
+
+D:\mitm-antigravity\target-gui-test\x86_64-pc-windows-msvc\release\deps\libserde-80883d34cbfeb3cb.rmeta: C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs D:\mitm-antigravity\target-gui-test\x86_64-pc-windows-msvc\release\build\serde-9e863a5f231afc52\out/private.rs
+
+C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs:
+C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs:
+C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs:
+C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs:
+C:\Users\Phong-NUC\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs:
+D:\mitm-antigravity\target-gui-test\x86_64-pc-windows-msvc\release\build\serde-9e863a5f231afc52\out/private.rs:
+
+# env-dep:OUT_DIR=D:\\mitm-antigravity\\target-gui-test\\x86_64-pc-windows-msvc\\release\\build\\serde-9e863a5f231afc52\\out

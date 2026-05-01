@@ -129,7 +129,8 @@ function autoStartShellCommand() {
 }
 
 function macLaunchAgentDomain() {
-    return `gui/${process.getuid()}`;
+    const uid = typeof process.getuid === "function" ? process.getuid() : 501;
+    return `gui/${uid}`;
 }
 
 function macLaunchAgentBootstrapCommand(plistPath = autoStartPath()) {

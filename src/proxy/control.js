@@ -10,7 +10,9 @@ const {
   execPowerShell,
   execPromise,
   execWithSudo,
+  isWindowsElevated,
   powershellSingleQuote,
+  safeChildProcessEnv,
   shellQuote,
   windowsCommandLineArguments,
 } = require("../system");
@@ -151,7 +153,7 @@ function checkProxyHealth(port, targetHost = DEFAULT_TARGET) {
   });
 }
 
-async function waitForProxyHealth(port, targetHost = DEFAULT_TARGET, attempts = 20) {
+async function waitForProxyHealth(port, targetHost = DEFAULT_TARGET, attempts = 60) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (await checkProxyHealth(port, targetHost)) return true;
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -171,30 +173,48 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
   }
 
   const logPath = proxyLogPath();
-  appendLog("info", "Starting proxy process", { port, targetHost, logPath });
+  appendLog("info", "Starting proxy process", {
+    port,
+    targetHost,
+    logPath,
+    execPath: process.execPath,
+    pkg: Boolean(process.pkg),
+    runtimeDir: runtimeDir(),
+  });
 
   if (IS_WIN) {
     const { cliEntrypointPath } = require("../config");
     const windowsArgs = process.pkg
       ? ["start", "--skip-setup", "--port", String(Number(port))]
       : [cliEntrypointPath(), "start", "--skip-setup", "--port", String(Number(port))];
-    // Dùng cmd /c để: (1) chạy hidden, (2) redirect stdout/stderr ra log file.
-    // QUAN TRỌNG: KHÔNG bọc thêm outer quotes xung quanh cmdLine trong /c argument
-    // vì cmd.exe sẽ parse nhầm khi binary path đã có quotes bên trong.
-    // Đúng:   cmd /c "C:\binary.exe" arg1 arg2 >> logfile
-    // Sai:    cmd /c ""C:\binary.exe" arg1 arg2" >> logfile  ← double-quote conflict
-    const binaryQ = `"${process.execPath.replace(/"/g, '""')}"`;
-    const argsStr  = windowsCommandLineArguments(windowsArgs);
-    const logQ     = `"${logPath.replace(/"/g, '""')}"`;
-    const cmdArg   = `/c ${binaryQ} ${argsStr} >> ${logQ} 2>&1`;
-    const psScript = [
-      `$workDir = ${powershellSingleQuote(runtimeDir())}`,
-      `Start-Process -FilePath 'cmd.exe'`,
-      `  -ArgumentList ${powershellSingleQuote(cmdArg)}`,
-      `  -WorkingDirectory $workDir`,
-      `  -WindowStyle Hidden`,
-    ].join(" `\n");
-    await execPowerShell(psScript, { elevated: true });
+    if (await isWindowsElevated()) {
+      const { spawn } = require("child_process");
+      const out = fs.openSync(logPath, "a");
+      try {
+        const child = spawn(process.execPath, windowsArgs, {
+          detached: true,
+          stdio: ["ignore", out, out],
+          cwd: runtimeDir(),
+          env: safeChildProcessEnv(),
+          windowsHide: true,
+        });
+        child.unref();
+      } finally {
+        fs.closeSync(out);
+      }
+    } else {
+      const psScript = [
+        `$psi = [System.Diagnostics.ProcessStartInfo]::new()`,
+        `$psi.FileName = ${powershellSingleQuote(process.execPath)}`,
+        `$psi.Arguments = ${powershellSingleQuote(windowsCommandLineArguments(windowsArgs))}`,
+        `$psi.WorkingDirectory = ${powershellSingleQuote(runtimeDir())}`,
+        `$psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden`,
+        `$psi.UseShellExecute = $true`,
+        `$psi.Verb = 'runas'`,
+        `[System.Diagnostics.Process]::Start($psi) | Out-Null`,
+      ].join("; ");
+      await execPowerShell(psScript);
+    }
   } else if (IS_MAC) {
     await bootstrapMacProxyLaunchDaemon({ sudoPassword, port, logPath });
   } else {
@@ -260,7 +280,7 @@ async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET
       `      | Select-Object -ExpandProperty OwningProcess -Unique`,
       `if ($p) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }`,
     ].join("; ");
-    await execPowerShell(psKill, { elevated: true });
+    await execPowerShell(psKill, { elevated: !(await isWindowsElevated()) });
   } else {
     if (IS_MAC && Number(port) < 1024 && fs.existsSync(macProxyLaunchDaemonPath())) {
       // removePlist=true (Stop & Remove DNS): xóa plist để proxy không auto-start sau reboot

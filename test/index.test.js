@@ -451,6 +451,19 @@ test("PowerShell single-quote helper escapes embedded quotes", () => {
   assert.equal(mitm.powershellSingleQuote("C:\\Users\\O'Brien\\app"), "'C:\\Users\\O''Brien\\app'");
 });
 
+test("safe child process env clears pkg self-spawn marker", () => {
+  const originalPkg = process.pkg;
+  try {
+    process.pkg = { entrypoint: "index.js" };
+    const env = mitm.safeChildProcessEnv({ PATH: "C:\\Windows", PKG_EXECPATH: "C:\\app\\mitm.exe" });
+    assert.equal(env.PATH, "C:\\Windows");
+    assert.equal(env.PKG_EXECPATH, "");
+  } finally {
+    if (typeof originalPkg === "undefined") delete process.pkg;
+    else process.pkg = originalPkg;
+  }
+});
+
 test("Windows command-line args preserve paths with spaces", () => {
   assert.equal(
     mitm.windowsCommandLineArguments([
@@ -465,6 +478,17 @@ test("Windows command-line args preserve paths with spaces", () => {
   assert.equal(
     mitm.windowsCommandLineArguments(["C:\\Path With Space\\", "quote\"value"]),
     "\"C:\\Path With Space\\\\\" \"quote\\\"value\""
+  );
+});
+
+test("Windows cmd redirect args preserve quoted executable and log paths", () => {
+  assert.equal(
+    mitm.windowsCmdRedirectArguments(
+      "C:\\Program Files\\MITM AG\\mitm-ag-backend.exe",
+      ["start", "--skip-setup", "--port", "443"],
+      "C:\\Users\\Phong NUC\\AppData\\Local\\Temp\\mitm-antigravity-proxy.log"
+    ),
+    "/s /c \"\"C:\\Program Files\\MITM AG\\mitm-ag-backend.exe\" start --skip-setup --port 443 >> \"C:\\Users\\Phong NUC\\AppData\\Local\\Temp\\mitm-antigravity-proxy.log\" 2>&1\""
   );
 });
 

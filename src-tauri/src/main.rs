@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::{
     collections::BTreeSet,
     env,
@@ -13,7 +15,18 @@ use std::{
 
 use tauri::Manager;
 use tauri::Url;
+use tauri::WebviewUrl;
+use tauri::WebviewWindowBuilder;
 use tauri_plugin_updater::UpdaterExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(windows)]
+fn hide_command_window(command: &mut Command) -> &mut Command {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(CREATE_NO_WINDOW)
+}
 
 fn js_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
@@ -24,6 +37,11 @@ fn js_escape(s: &str) -> String {
 const GUI_ADDR: &str = "127.0.0.1:20245";
 const GUI_URL: &str = "http://127.0.0.1:20245/";
 const GUI_PORT: &str = "20245";
+const PROCESS_WAIT_ATTEMPTS: usize = 20;
+const PROCESS_WAIT_DELAY: Duration = Duration::from_millis(100);
+const GUI_WAIT_ATTEMPTS: usize = 80;
+const GUI_WAIT_DELAY: Duration = Duration::from_millis(125);
+const GUI_PROBE_TIMEOUT: Duration = Duration::from_millis(350);
 
 struct BackendProcess(Arc<Mutex<Option<Child>>>);
 
@@ -40,6 +58,47 @@ fn append_startup_log(level: &str, message: &str) {
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "[tauri:{level}] {message}");
     }
+}
+
+#[cfg(windows)]
+fn is_elevated() -> bool {
+    let mut command = Command::new("net");
+    hide_command_window(
+        command
+            .arg("session")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .status()
+    .map(|status| status.success())
+    .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn relaunch_as_admin() {
+    let Ok(exe) = std::env::current_exe() else {
+        append_startup_log("error", "Failed to resolve current exe for elevation");
+        return;
+    };
+    let exe_arg = exe.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$psi = [System.Diagnostics.ProcessStartInfo]::new(); \
+         $psi.FileName = '{exe_arg}'; \
+         $psi.UseShellExecute = $true; \
+         $psi.Verb = 'runas'; \
+         $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden; \
+         [System.Diagnostics.Process]::Start($psi) | Out-Null"
+    );
+    let mut command = Command::new("powershell");
+    let _ = hide_command_window(
+        command
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .spawn();
 }
 
 #[cfg(unix)]
@@ -81,15 +140,17 @@ fn old_app_instance_pids() -> Vec<u32> {
            ($_.CommandLine -like '*mitm-ag-tauri.exe*') \
          ) }} | Select-Object -ExpandProperty ProcessId"
     );
-    let Ok(output) = Command::new("powershell")
-        .args([
+    let mut command = Command::new("powershell");
+    let Ok(output) = hide_command_window(
+        command.args([
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
             &script,
-        ])
-        .output()
+        ]),
+    )
+    .output()
     else {
         return Vec::new();
     };
@@ -103,7 +164,7 @@ fn old_app_instance_pids() -> Vec<u32> {
 }
 
 fn wait_until_pids_exit(pids: &[u32]) -> bool {
-    for _ in 0..20 {
+    for _ in 0..PROCESS_WAIT_ATTEMPTS {
         let remaining: BTreeSet<u32> = old_app_instance_pids()
             .into_iter()
             .filter(|pid| pids.contains(pid))
@@ -111,7 +172,7 @@ fn wait_until_pids_exit(pids: &[u32]) -> bool {
         if remaining.is_empty() {
             return true;
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(PROCESS_WAIT_DELAY);
     }
     false
 }
@@ -147,9 +208,15 @@ fn terminate_old_app_instances() {
     #[cfg(windows)]
     {
         for pid in &pids {
-            let _ = Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .status();
+            let mut command = Command::new("taskkill");
+            let _ = hide_command_window(
+                command
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null()),
+            )
+            .status();
         }
         let _ = wait_until_pids_exit(&pids);
     }
@@ -194,6 +261,11 @@ fn start_backend(app: &tauri::App) -> Result<BackendProcess, String> {
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(stderr_log));
 
+    #[cfg(windows)]
+    {
+        hide_command_window(&mut command);
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -226,7 +298,10 @@ fn gui_port_owner_pids() -> Vec<u32> {
 
 #[cfg(windows)]
 fn gui_port_owner_pids() -> Vec<u32> {
-    let Ok(output) = Command::new("netstat").args(["-ano", "-p", "tcp"]).output() else {
+    let mut command = Command::new("netstat");
+    let Ok(output) = hide_command_window(command.args(["-ano", "-p", "tcp"]))
+        .output()
+    else {
         return Vec::new();
     };
 
@@ -247,11 +322,11 @@ fn gui_port_owner_pids() -> Vec<u32> {
 }
 
 fn wait_until_gui_port_free() -> bool {
-    for _ in 0..20 {
+    for _ in 0..PROCESS_WAIT_ATTEMPTS {
         if gui_port_owner_pids().is_empty() {
             return true;
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(PROCESS_WAIT_DELAY);
     }
     false
 }
@@ -287,9 +362,15 @@ fn free_gui_port() {
     #[cfg(windows)]
     {
         for pid in &pids {
-            let _ = Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .status();
+            let mut command = Command::new("taskkill");
+            let _ = hide_command_window(
+                command
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null()),
+            )
+            .status();
         }
         let _ = wait_until_gui_port_free();
     }
@@ -307,9 +388,8 @@ fn free_gui_port() {
 
 fn read_gui_probe() -> Option<String> {
     let mut stream = TcpStream::connect(GUI_ADDR).ok()?;
-    let timeout = Some(Duration::from_millis(350));
-    let _ = stream.set_read_timeout(timeout);
-    let _ = stream.set_write_timeout(timeout);
+    let _ = stream.set_read_timeout(Some(GUI_PROBE_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(GUI_PROBE_TIMEOUT));
     stream
         .write_all(
             b"GET /api/bootstrap HTTP/1.1\r\nHost: 127.0.0.1:20245\r\nConnection: close\r\n\r\n",
@@ -330,11 +410,11 @@ fn is_mitm_gui_server() -> bool {
 }
 
 fn wait_for_gui() -> bool {
-    for _ in 0..80 {
+    for _ in 0..GUI_WAIT_ATTEMPTS {
         if is_mitm_gui_server() {
             return true;
         }
-        thread::sleep(Duration::from_millis(125));
+        thread::sleep(GUI_WAIT_DELAY);
     }
     false
 }
@@ -366,6 +446,25 @@ fn navigate_to_gui(window: &tauri::WebviewWindow) {
     if let Ok(url) = Url::parse(GUI_URL) {
         let _ = window.navigate(url);
     }
+    let _ = window.eval(&format!("window.location.replace('{GUI_URL}')"));
+    let retry_window = window.clone();
+    tauri::async_runtime::spawn(async move {
+        thread::sleep(Duration::from_millis(350));
+        if let Ok(url) = Url::parse(GUI_URL) {
+            let _ = retry_window.navigate(url);
+        }
+        let _ = retry_window.eval(&format!("window.location.replace('{GUI_URL}')"));
+    });
+}
+
+fn create_main_window(app: &tauri::App) -> Result<tauri::WebviewWindow, String> {
+    let url = Url::parse(GUI_URL).map_err(|error| error.to_string())?;
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+        .title("MITM AG")
+        .inner_size(1180.0, 820.0)
+        .min_inner_size(980.0, 680.0)
+        .build()
+        .map_err(|error| error.to_string())
 }
 
 fn check_for_updates(app: tauri::AppHandle) {
@@ -400,6 +499,13 @@ fn check_for_updates(app: tauri::AppHandle) {
 }
 
 fn main() {
+    #[cfg(windows)]
+    if !is_elevated() {
+        append_startup_log("info", "Relaunching MITM AG as administrator");
+        relaunch_as_admin();
+        return;
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -409,18 +515,16 @@ fn main() {
             app.manage(backend);
 
             // Kiểm tra update sau khi window load xong (fire-and-forget)
-            check_for_updates(app.handle().clone());
-
-            if let Some(window) = app.get_webview_window("main") {
-                if wait_for_gui() {
-                    navigate_to_gui(&window);
-                } else {
-                    let log_path = backend_log_path()
-                        .to_string_lossy()
-                        .replace('\\', "\\\\")
-                        .replace('\'', "\\'");
-                    let _ = window.eval(&backend_error_script(&log_path));
-                }
+            let window = create_main_window(app)?;
+            if wait_for_gui() {
+                navigate_to_gui(&window);
+                check_for_updates(app.handle().clone());
+            } else {
+                let log_path = backend_log_path()
+                    .to_string_lossy()
+                    .replace('\\', "\\\\")
+                    .replace('\'', "\\'");
+                let _ = window.eval(&backend_error_script(&log_path));
             }
             Ok(())
         })
@@ -438,8 +542,8 @@ fn main() {
                                     .args(["-TERM", &pid.to_string()])
                                     .status();
                                 // Chờ tối đa 2 giây để process thoát sạch
-                                for _ in 0..20 {
-                                    thread::sleep(Duration::from_millis(100));
+                                for _ in 0..PROCESS_WAIT_ATTEMPTS {
+                                    thread::sleep(PROCESS_WAIT_DELAY);
                                     if let Ok(Some(_)) = process.try_wait() {
                                         return;
                                     }

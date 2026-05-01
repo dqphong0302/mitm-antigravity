@@ -1,0 +1,2 @@
+cargo:rustc-link-search=native=D:\mitm-antigravity\target-gui-test\x86_64-pc-windows-msvc\release\build\webview2-com-sys-bc490105eeae2c2e\out\x64
+cargo:rustc-link-lib=advapi32

@@ -10,16 +10,7 @@
         "frontendDist": "../tauri-ui"
     },
     "app": {
-        "windows": [
-            {
-                "title": "MITM AG",
-                "width": 1180,
-                "height": 820,
-                "minWidth": 980,
-                "minHeight": 680,
-                "url": "index.html"
-            }
-        ],
+        "windows": [],
         "security": {
             "csp": "default-src 'self'; connect-src http://127.0.0.1:20245; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
         }
