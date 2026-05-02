@@ -57,8 +57,6 @@ const {
 const { guiHtml } = require("./template");
 const { sendApiError, sendHtml, sendNotFound } = require("./api-utils");
 const { createGuiRoutes, findGuiRoute } = require("./routes");
-const { getClaudeCodeSettings, saveClaudeCodeSettings } = require("../thirdparty/claudecode");
-const { getCodexSettings, saveCodexSettings } = require("../thirdparty/codex");
 
 function guiPresets() {
   return {};
@@ -139,11 +137,6 @@ function createRouteHandlers(options) {
     handleDisableAutoStart,
     handleStatus: (_req, res) => handleStatus(res, options),
     handleClearLogs,
-    // Third-party CLI configs
-    handleGetClaudeCode: (_req, res) => sendJson(res, 200, getClaudeCodeSettings()),
-    handleSaveClaudeCode,
-    handleGetCodex: (_req, res) => sendJson(res, 200, getCodexSettings()),
-    handleSaveCodex,
   };
 }
 
@@ -551,23 +544,6 @@ async function handleImportConfig(req, res) {
   sendJson(res, 200, { config: imported });
 }
 
-async function handleSaveClaudeCode(req, res) {
-  const body = await readRequestJson(req);
-  const result = saveClaudeCodeSettings({
-    apiKey:  typeof body.apiKey  === "string" ? body.apiKey.trim()  : undefined,
-    baseUrl: typeof body.baseUrl === "string" ? body.baseUrl.trim() : undefined,
-  });
-  sendJson(res, 200, result);
-}
-
-async function handleSaveCodex(req, res) {
-  const body = await readRequestJson(req);
-  const result = saveCodexSettings({
-    apiKey:  typeof body.apiKey  === "string" ? body.apiKey.trim()  : undefined,
-    baseUrl: typeof body.baseUrl === "string" ? body.baseUrl.trim() : undefined,
-  });
-  sendJson(res, 200, result);
-}
 
 async function startGuiServer(options = {}) {
   const uiPort = Number(options.uiPort || 20245);
@@ -585,7 +561,7 @@ async function startGuiServer(options = {}) {
   });
 
   const url = `http://127.0.0.1:${uiPort}/`;
-  console.log(`GUI ready at ${url}`);
+  console.log(`GUI server started: ${url}`);
   appendLog("info", "GUI backend ready", { url });
 
   // NOTE: windowsRefreshAutoStartPath đã bị bỏ khỏi đây vì nó trigger UAC mỗi lần
@@ -598,11 +574,16 @@ async function startGuiServer(options = {}) {
 async function runGui(options) {
   const { server, url } = await startGuiServer(options);
 
+  // In URL ra console để user biết truy cập đâu khi browser không tự mở
+  console.log(`\nMITM Antigravity GUI: ${url}`);
+  console.log("Press Ctrl+C to stop the GUI server.\n");
+
   if (!options.noOpen) {
     try {
       openBrowser(url);
     } catch (error) {
       console.error(`Open browser failed: ${error.message}`);
+      console.error(`Please open manually: ${url}`);
     }
   }
 

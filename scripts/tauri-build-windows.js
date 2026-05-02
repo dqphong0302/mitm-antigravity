@@ -17,6 +17,11 @@ function targetFromArgs(args) {
   return "";
 }
 
+function pkgTargetFromTriple(target) {
+  if (target.includes("aarch64-pc-windows")) return "win-arm64";
+  return "win-x64";
+}
+
 const passthroughArgs = process.argv.slice(2);
 const target = process.env.MITM_TAURI_TARGET
   || process.env.CARGO_BUILD_TARGET
@@ -31,7 +36,7 @@ const env = {
   TAURI_TARGET_TRIPLE: target,
 };
 
-execFileSync(executable("npm"), ["run", "build:pkg:windows"], {
+execFileSync(executable("node"), [path.join("scripts", "build-pkg.js"), pkgTargetFromTriple(target)], {
   cwd: root,
   env,
   stdio: "inherit",

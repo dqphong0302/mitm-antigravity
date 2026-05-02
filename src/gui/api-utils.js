@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 
-const { sendJson } = require("../http");
-const { appendLog, errorMeta, logPaths } = require("../logging");
+const { sendJson } = require("../system/http");
+const { appendLog, errorMeta, logPaths } = require("../system/logging");
 
 function requestId() {
     return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;

@@ -681,14 +681,28 @@ async function runProxy(options) {
       // Forward Antigravity body to 9router's chat endpoint. 9router detects
       // userAgent:"antigravity" + request.contents, then translates provider
       // output back to wrapped Antigravity SSE (`response.candidates`).
-      const response = await retryWithBackoff(
-        () => fetch(chatCompletionsRouterUrl(options.routerUrl), {
-          method: "POST",
-          headers,
-          body: JSON.stringify(body),
-        }),
-        { maxRetries: options.maxRetries, retryDelay: options.retryDelay, retryBackoff: options.retryBackoff }
-      );
+      const requestTimeoutMs = Number.isFinite(Number(options.requestTimeoutMs))
+        ? Math.max(0, Number(options.requestTimeoutMs))
+        : 10 * 60 * 1000;
+      const controller = requestTimeoutMs > 0 ? new AbortController() : null;
+      const timeoutId = controller
+        ? setTimeout(() => controller.abort(new Error(`upstream request timeout after ${requestTimeoutMs}ms`)), requestTimeoutMs)
+        : null;
+
+      let response;
+      try {
+        response = await retryWithBackoff(
+          () => fetch(chatCompletionsRouterUrl(options.routerUrl), {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body),
+            signal: controller ? controller.signal : undefined,
+          }),
+          { maxRetries: options.maxRetries, retryDelay: options.retryDelay, retryBackoff: options.retryBackoff }
+        );
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+      }
 
       if (!response.ok) {
         const errText = await sendUpstreamErrorResponse(res, response);

@@ -54,8 +54,6 @@ function guiHtml() {
         <button class="tab-btn" data-tab="doctor" type="button" data-i18n="nav.doctor">Doctor</button>
         <button class="tab-btn" data-tab="config" type="button" data-i18n="nav.config">Endpoint API</button>
         <button class="tab-btn" data-tab="mapping" type="button" data-i18n="nav.mapping">Model Mapping</button>
-        <button class="tab-btn" data-tab="claudecode" type="button" data-i18n="nav.claudecode">Claude Code</button>
-        <button class="tab-btn" data-tab="codex" type="button" data-i18n="nav.codex">Codex</button>
         <button class="tab-btn" data-tab="logs" type="button" data-i18n="nav.logs">Logs</button>
         <button class="tab-btn" data-tab="settings" type="button" data-i18n="nav.settings">Settings</button>
         <button class="tab-btn" data-tab="guide" type="button" data-i18n="nav.guide">Guide</button>
@@ -209,73 +207,6 @@ function guiHtml() {
             </div>
             <div id="mappingStatus" class="status"></div>
             <p class="panel-subtitle" data-i18n="mapping.note">Only these six built-in Antigravity models can be mapped. Unmapped models pass through to Google.</p>
-          </section>
-        </section>
-
-        <!-- ── Claude Code tab ──────────────────────────────────────────── -->
-        <section class="tab-panel" data-panel="claudecode">
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2 class="panel-title" data-i18n="claudecode.title">Claude Code</h2>
-                <p class="panel-subtitle" data-i18n="claudecode.subtitle">Configure Anthropic Claude Code CLI. Settings are saved to <code>~/.claude/settings.json</code>.</p>
-              </div>
-            </div>
-            <div class="form-grid">
-              <label class="full"><span data-i18n="claudecode.apiKey">API Key (ANTHROPIC_API_KEY)</span>
-                <div class="input-wrap">
-                  <input id="claudecodeApiKey" type="password" autocomplete="off" data-i18n-placeholder="placeholder.pasteKey" placeholder="sk-ant-api03-…">
-                  <button class="secondary" id="claudecodeEyeBtn" type="button" data-i18n="button.showKey">Show</button>
-                </div>
-              </label>
-              <label class="full"><span data-i18n="claudecode.baseUrl">Base URL (ANTHROPIC_BASE_URL)</span>
-                <input id="claudecodeBaseUrl" autocomplete="off" placeholder="https://api.anthropic.com" data-i18n-placeholder="placeholder.baseUrl">
-              </label>
-            </div>
-            <div class="path-grid" style="margin-top:12px;">
-              <div class="path-item">
-                <div class="path-label" data-i18n="claudecode.configPath">Config file</div>
-                <div class="path-value" id="claudecodeConfigPath">—</div>
-              </div>
-            </div>
-            <div class="row" style="margin-top:14px;">
-              <button id="claudecodeSaveBtn" type="button" data-i18n="button.save">Save</button>
-            </div>
-            <div id="claudecodeStatus" class="status"></div>
-          </section>
-        </section>
-
-        <!-- ── Codex tab ─────────────────────────────────────────────────── -->
-        <section class="tab-panel" data-panel="codex">
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2 class="panel-title" data-i18n="codex.title">Codex</h2>
-                <p class="panel-subtitle" data-i18n="codex.subtitle">Configure OpenAI Codex CLI. Settings are saved to <code>~/.codex/config.toml</code>.</p>
-              </div>
-            </div>
-            <div class="form-grid">
-              <label class="full"><span data-i18n="codex.apiKey">API Key</span>
-                <div class="input-wrap">
-                  <input id="codexApiKey" type="password" autocomplete="off" data-i18n-placeholder="placeholder.pasteKey" placeholder="sk-…">
-                  <button class="secondary" id="codexEyeBtn" type="button" data-i18n="button.showKey">Show</button>
-                </div>
-              </label>
-              <p class="panel-subtitle full" id="codexEnvNote" data-i18n="codex.envNote" style="margin-top:2px;"></p>
-              <label class="full"><span data-i18n="codex.baseUrl">Base URL</span>
-                <input id="codexBaseUrl" autocomplete="off" placeholder="https://api.openai.com/v1" data-i18n-placeholder="placeholder.baseUrl">
-              </label>
-            </div>
-            <div class="path-grid" style="margin-top:12px;">
-              <div class="path-item">
-                <div class="path-label" data-i18n="codex.configPath">Config file</div>
-                <div class="path-value" id="codexConfigPath">—</div>
-              </div>
-            </div>
-            <div class="row" style="margin-top:14px;">
-              <button id="codexSaveBtn" type="button" data-i18n="button.save">Save</button>
-            </div>
-            <div id="codexStatus" class="status"></div>
           </section>
         </section>
 

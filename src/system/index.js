@@ -138,11 +138,14 @@ function execPowerShell(script, { elevated = false } = {}) {
   }
 
   // ── Elevated (Verb RunAs): Start-Process không pipe stdout về process cha.
-  // Dùng temp file để capture output rồi đọc lại sau khi script kết thúc.
-  const outFile = path.join(os.tmpdir(), `mitm-ps-${process.pid}-${Date.now()}.txt`);
+  // Viết script thật ra temp .ps1 để tránh lỗi Windows "command line is too long"
+  // khi EncodedCommand bị phình lớn bởi UTF-16 + Base64 + nested launcher.
+  const nonce = `${process.pid}-${Date.now()}`;
+  const outFile = path.join(os.tmpdir(), `mitm-ps-${nonce}.txt`);
+  const scriptFile = path.join(os.tmpdir(), `mitm-ps-${nonce}.ps1`);
   const outFilePs = outFile.replace(/\\/g, "\\\\").replace(/'/g, "''");
+  const scriptFilePs = scriptFile.replace(/\\/g, "\\\\").replace(/'/g, "''");
 
-  // Bọc script: toàn bộ output (kể cả error stream) ghi ra temp file
   const wrapped = [
     `$ErrorActionPreference = 'Continue'`,
     `try {`,
@@ -154,7 +157,8 @@ function execPowerShell(script, { elevated = false } = {}) {
     `}`,
   ].join("; ");
 
-  const encoded = Buffer.from(wrapped, "utf16le").toString("base64");
+  fs.writeFileSync(scriptFile, wrapped, "utf8");
+
   const powershellPath = path.join(
     process.env.SystemRoot || "C:\\Windows",
     "System32",
@@ -162,7 +166,7 @@ function execPowerShell(script, { elevated = false } = {}) {
     "v1.0",
     "powershell.exe"
   );
-  const elevatedArgs = `-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+  const elevatedArgs = `-NoProfile -ExecutionPolicy Bypass -File '${scriptFilePs}'`;
   const launcher = [
     `$psi = [System.Diagnostics.ProcessStartInfo]::new()`,
     `$psi.FileName = ${powershellSingleQuote(powershellPath)}`,
@@ -186,9 +190,10 @@ function execPowerShell(script, { elevated = false } = {}) {
           try { fs.unlinkSync(outFile); } catch { /* best effort */ }
         }
       } catch { /* ignore read error */ }
+      try { fs.unlinkSync(scriptFile); } catch { /* best effort */ }
 
       if (error) {
-        reject(new Error(`Elevated PowerShell failed: ${stderr || error.message}`));
+        reject(new Error(`Elevated PowerShell failed: ${captured || stderr || error.message}`));
       } else {
         resolve(captured || stdout);
       }

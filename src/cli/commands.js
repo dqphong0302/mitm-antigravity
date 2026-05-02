@@ -76,9 +76,10 @@ Options:
   --always-intercept=false  Require an explicit Antigravity mapping before intercepting
   --model-map-file    JSON map file: { "modelA": "modelB" }
   --map               Add mapping source=target. Can be repeated
-  --max-retries       Maximum retry attempts for 503 errors (default: 5)
+  --max-retries       Maximum retry attempts for retryable upstream errors (default: 5)
   --retry-delay       Initial retry delay in ms (default: 1000)
   --retry-backoff     Backoff multiplier for retries (default: 1.5)
+  --request-timeout-ms  Upstream request timeout in ms (default: 600000, 0 disables)
   --ui-port           Local GUI port (default: 20245)
   --no-open           Do not open browser for GUI
   --help              Show help
@@ -313,6 +314,7 @@ async function main() {
     maxRetries: Number(args["max-retries"] || process.env.MITM_MAX_RETRIES || savedConfig.maxRetries),
     retryDelay: Number(args["retry-delay"] || process.env.MITM_RETRY_DELAY || savedConfig.retryDelay),
     retryBackoff: Number(args["retry-backoff"] || process.env.MITM_RETRY_BACKOFF || savedConfig.retryBackoff),
+    requestTimeoutMs: Number(args["request-timeout-ms"] || process.env.MITM_REQUEST_TIMEOUT_MS || savedConfig.requestTimeoutMs),
     uiPort: Number(args["ui-port"] || process.env.MITM_UI_PORT || 20245),
     noOpen: args["no-open"] === true || String(process.env.MITM_NO_OPEN || "").toLowerCase() === "true",
   };
