@@ -1,6 +1,6 @@
 {
   "name": "mitm-antigravity",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Cross-platform Antigravity MITM app with configurable DNS, endpoint, API key and model mapping",
   "type": "commonjs",
@@ -35,6 +35,8 @@
     "tauri:build:macos": "npm run build:pkg:macos && npx tauri build",
     "tauri:build:macos:all": "npm run build:pkg:macos:all && npx tauri build --target universal-apple-darwin",
     "tauri:build:windows": "node scripts/tauri-build-windows.js",
+    "tauri:build:windows:bootstrapper": "node scripts/tauri-build-windows.js --flavor bootstrapper",
+    "tauri:build:windows:offline": "node scripts/tauri-build-windows.js --flavor offline",
     "tauri:build": "npm run tauri:build:native"
   },
   "devDependencies": {

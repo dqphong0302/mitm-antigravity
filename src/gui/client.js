@@ -255,12 +255,24 @@ function guiClientScript() {
       target.innerHTML = warnings.map(readinessMessage).join("");
     }
 
-    async function loadStatus() {
-      try {
-        renderStatus(await api("/api/status"));
-      } catch {
-        // Status polling is best-effort; actionable errors appear in explicit actions.
-      }
+    let statusRequest = null;
+    let lastStatusRequestAt = 0;
+
+    async function loadStatus(options) {
+      const force = Boolean(options && options.force);
+      const now = Date.now();
+      if (!force && statusRequest) return statusRequest;
+      if (!force && now - lastStatusRequestAt < 1200) return statusRequest || Promise.resolve();
+      lastStatusRequestAt = now;
+      statusRequest = api("/api/status")
+        .then(renderStatus)
+        .catch(() => {
+          // Status polling is best-effort; actionable errors appear in explicit actions.
+        })
+        .finally(() => {
+          statusRequest = null;
+        });
+      return statusRequest;
     }
 
     function setSystemButtons(disabled) {

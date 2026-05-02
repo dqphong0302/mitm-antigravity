@@ -62,6 +62,38 @@ function guiPresets() {
   return {};
 }
 
+const STATUS_CACHE_MS = IS_WIN ? 5000 : 1500;
+const AUTOSTART_CACHE_MS = IS_WIN ? 60000 : 10000;
+let statusCache = { at: 0, key: "", value: null };
+let autoStartCache = { at: 0, value: null };
+
+function statusCacheKey(options, deep) {
+  const cfg = readConfig();
+  return JSON.stringify({
+    deep: Boolean(deep),
+    port: Number(cfg.port || options.port || 443),
+    targetHost: primaryTargetHost(cfg),
+    routerUrl: cfg.routerUrl || "",
+    modelMap: cfg.modelMap || {},
+    remoteIp: cfg.remoteIp || options.remoteIp || DEFAULT_REMOTE,
+  });
+}
+
+function invalidateStatusCache() {
+  statusCache = { at: 0, key: "", value: null };
+  autoStartCache = { at: 0, value: null };
+}
+
+async function cachedAutoStartStatus(force = false) {
+  const now = Date.now();
+  if (!force && autoStartCache.value && now - autoStartCache.at < AUTOSTART_CACHE_MS) {
+    return autoStartCache.value;
+  }
+  const value = await autoStartStatus();
+  autoStartCache = { at: now, value };
+  return value;
+}
+
 async function reloadProxyAfterConfigSave(previousConfig, nextConfig, body, options) {
   const port = Number(nextConfig.port || options.port || 443);
   const targetHost = primaryTargetHost(nextConfig);
@@ -181,6 +213,7 @@ async function handleSaveConfig(req, res, options) {
   };
   writeConfig(next);
   const proxy = await reloadProxyAfterConfigSave(current, next, body, options);
+  invalidateStatusCache();
   sendJson(res, 200, { config: next, proxy });
 }
 
@@ -250,6 +283,7 @@ async function handleStartProxy(req, res, options) {
     targetHost,
     alreadyRunning: result.alreadyRunning,
   });
+  invalidateStatusCache();
   sendJson(res, 200, { ...result, restarted: false, cert: certResult, dns: dnsResult, nodeTrust });
 }
 
@@ -270,6 +304,7 @@ async function handleStartProxyOnly(req, res, options) {
     targetHost,
     alreadyRunning: result.alreadyRunning,
   });
+  invalidateStatusCache();
   sendJson(res, 200, { ...result, restarted: false, setupSkipped: true });
 }
 
@@ -286,6 +321,7 @@ async function handleStopProxy(req, res, options) {
     port: Number(cfg.port || options.port || 443),
     stopped: result.stopped,
   });
+  invalidateStatusCache();
   sendJson(res, 200, result);
 }
 
@@ -308,6 +344,7 @@ async function handleForceKillPort(req, res, options) {
   // stopProxyByPort handles: LaunchDaemon bootout (macOS <1024) + kill PIDs
   const result = await stopProxyByPort({ sudoPassword, port, targetHost: primaryTargetHost(cfg) });
   appendLog("info", "Force-kill port done", { port, stopped: result.stopped, owner: ownerText });
+  invalidateStatusCache();
   sendJson(res, 200, { killed: result.stopped, wasListening: true, port, owners, ownerText });
 }
 
@@ -330,6 +367,7 @@ async function handleStopAndCleanup(req, res, options) {
     dnsRemoved: dns.removed,
     targetHosts: targetHosts.length,
   });
+  invalidateStatusCache();
   sendJson(res, 200, { stop, dns });
 }
 
@@ -352,6 +390,7 @@ async function handleReloadProxy(req, res, options) {
   const nodeTrust = await applyAntigravityNodeTrust(cert.ca);
   const result = await startProxyDetached({ sudoPassword, port, targetHost });
   appendLog("info", "Proxy reloaded from UI", { port, targetHost });
+  invalidateStatusCache();
   sendJson(res, 200, { ...result, reloaded: true, wasRunning: true, cert: certResult, nodeTrust });
 }
 
@@ -393,6 +432,7 @@ async function handleApplyDns(req, res, options) {
     };
     appendLog("info", "Proxy reloaded after DNS and certificate apply", { port, targetHost });
   }
+  invalidateStatusCache();
   sendJson(res, 200, { cert: certResult, dns: dnsResult, nodeTrust, proxy });
 }
 
@@ -401,6 +441,7 @@ async function handleApplyAppTrust(res) {
   const targetHosts = targetHostsFrom(cfg);
   const cert = await generateCert(targetHosts, { force: false });
   const nodeTrust = await applyAntigravityNodeTrust(cert.ca);
+  invalidateStatusCache();
   sendJson(res, 200, { nodeTrust });
 }
 
@@ -412,19 +453,28 @@ async function handleRemoveDns(req, res) {
     targetHosts: targetHostsFrom(cfg),
     sudoPassword,
   });
+  invalidateStatusCache();
   sendJson(res, 200, { dns: dnsResult });
 }
 
-async function collectGuiStatus(options) {
+async function collectGuiStatus(options, { deep = false, useCache = true } = {}) {
+  const key = statusCacheKey(options, deep);
+  const now = Date.now();
+  if (useCache && statusCache.value && statusCache.key === key && now - statusCache.at < STATUS_CACHE_MS) {
+    return statusCache.value;
+  }
+
   const cfg = readConfig();
   const { caCertPath } = certPaths();
   const certEx = certExists();
   const targetHosts = targetHostsFrom(cfg);
   const expectedIp = cfg.remoteIp || options.remoteIp || DEFAULT_REMOTE;
   const nodeTrust = certEx ? await checkAntigravityNodeTrust(caCertPath) : { supported: IS_MAC, applied: false, value: "" };
-  const proxyListening = await checkProxyHealth(Number(cfg.port || options.port || 443), targetHosts[0]);
-  const portOwners = await getPortOwners(Number(cfg.port || options.port || 443));
-  return {
+  const port = Number(cfg.port || options.port || 443);
+  const proxyListening = await checkProxyHealth(port, targetHosts[0]);
+  const shouldLoadPortOwners = deep || !proxyListening;
+  const portOwners = shouldLoadPortOwners ? await getPortOwners(port) : [];
+  const status = {
     proxyListening,
     dnsConfigured: dnsConfiguredForHosts(targetHosts, expectedIp),
     certExists: certEx,
@@ -436,11 +486,13 @@ async function collectGuiStatus(options) {
     routerUrl: cfg.routerUrl || "",
     mappedModels: Object.keys(cfg.modelMap || {}).length,
     machine: machineId(),
-    autoStart: await autoStartStatus(),
-    port: Number(cfg.port || options.port || 443),
+    autoStart: await cachedAutoStartStatus(deep),
+    port,
     portOwners,
     portOwnerText: formatPortOwners(portOwners),
   };
+  statusCache = { at: now, key, value: status };
+  return status;
 }
 
 function buildDoctorReport(status) {
@@ -471,11 +523,11 @@ function buildDoctorReport(status) {
 }
 
 async function handleStatus(res, options) {
-  sendJson(res, 200, await collectGuiStatus(options));
+  sendJson(res, 200, await collectGuiStatus(options, { deep: false, useCache: true }));
 }
 
 async function handleDoctor(res, options) {
-  const status = await collectGuiStatus(options);
+  const status = await collectGuiStatus(options, { deep: true, useCache: false });
   const report = buildDoctorReport(status);
   sendJson(res, 200, { status, ...report });
 }
@@ -489,16 +541,19 @@ async function handleUninstallCert(req, res) {
   const result = fs.existsSync(trustCertPath)
     ? await uninstallCert(trustCertPath, primaryTargetHost(cfg), sudoPassword)
     : { removed: false };
+  invalidateStatusCache();
   sendJson(res, 200, { cert: result });
 }
 
 async function handleEnableAutoStart(_req, res) {
   const result = await enableAutoStart();
+  invalidateStatusCache();
   sendJson(res, 200, result);
 }
 
 async function handleDisableAutoStart(_req, res) {
   const result = await disableAutoStart();
+  invalidateStatusCache();
   sendJson(res, 200, result);
 }
 
@@ -541,6 +596,7 @@ async function handleImportConfig(req, res) {
     routerUrl: imported.routerUrl,
     mappedModels: Object.keys(imported.modelMap || {}).length,
   });
+  invalidateStatusCache();
   sendJson(res, 200, { config: imported });
 }
 

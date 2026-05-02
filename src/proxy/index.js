@@ -33,6 +33,33 @@ const {
   logProxyReady,
 } = require("./logger");
 
+const MB = 1024 * 1024;
+// Normal Antigravity chat payloads are much smaller; keep guards ~1.5x larger
+// than generous baseline sizes so heavy prompts breathe but bad streams cannot
+// grow memory without bound.
+const MAX_REQUEST_BODY_BYTES = 96 * MB;
+const MAX_RESPONSE_BODY_BYTES = 192 * MB;
+const MAX_SSE_BUFFER_BYTES = 6 * MB;
+const MAX_PASSTHROUGH_BUFFER_BYTES = 48 * MB;
+
+function bytesLabel(bytes) {
+  return `${(bytes / MB).toFixed(1)}MB`;
+}
+
+class ProxyMemoryLimitError extends Error {
+  constructor(message, statusCode = 502) {
+    super(message);
+    this.name = "ProxyMemoryLimitError";
+    this.statusCode = statusCode;
+  }
+}
+
+function ensureBufferLimit(totalBytes, maxBytes, label) {
+  if (maxBytes > 0 && totalBytes > maxBytes) {
+    throw new ProxyMemoryLimitError(`${label} exceeds ${bytesLabel(maxBytes)}`);
+  }
+}
+
 // ─── Responses API helpers (for GPT / Responses API models) ────────────────
 
 const INTERNAL_INSTRUCTION_MARKER_RE = /CRITICAL\s+INSTRUCTION\s+\d+\s*:/i;
@@ -199,12 +226,13 @@ function nextSseEventBoundary(text) {
   return lf < crlf ? { index: lf, length: 2 } : { index: crlf, length: 4 };
 }
 
-function createInternalInstructionSseSanitizer() {
+function createInternalInstructionSseSanitizer(maxBufferBytes = MAX_SSE_BUFFER_BYTES) {
   let buffer = "";
   const sanitizer = createInternalInstructionTextSanitizer();
 
   function push(chunk) {
     buffer += String(chunk || "");
+    ensureBufferLimit(Buffer.byteLength(buffer), maxBufferBytes, "SSE buffer");
     let output = "";
 
     while (true) {
@@ -393,7 +421,7 @@ async function transformResponsesApiStream(responseBody, res) {
   let finished = false;
   let outputText = "";
 
-  function emitGeminiText(text, finishReason) {
+  async function emitGeminiText(text, finishReason) {
     if (!text) return;
     const candidate = {
       content: { parts: [{ text }], role: "model" },
@@ -404,25 +432,27 @@ async function transformResponsesApiStream(responseBody, res) {
         candidates: [candidate],
       },
     });
-    res.write(`data: ${chunk}\n\n`);
+    await writeResponseChunk(res, `data: ${chunk}\n\n`, reader);
   }
 
-  function emitFinish() {
+  async function emitFinish() {
     if (finished) return;
     finished = true;
     // Buffer GPT Responses deltas into one Gemini chunk. Antigravity 1.107.0
     // can crash on empty/final-only chunks while consuming Gemini SSE. It also
     // expects an explicit stream sentinel on this internal Cloud Code path.
-    emitGeminiText(stripInternalInstructionLeaks(outputText) || " ", "STOP");
-    res.write("data: [DONE]\n\n");
+    await emitGeminiText(stripInternalInstructionLeaks(outputText) || " ", "STOP");
+    await writeResponseChunk(res, "data: [DONE]\n\n", reader);
   }
 
   try {
     while (true) {
+      if (res.writableEnded || res.destroyed) break;
       const { done, value } = await reader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
+      ensureBufferLimit(Buffer.byteLength(buffer), MAX_SSE_BUFFER_BYTES, "Responses API SSE buffer");
 
       // SSE events được phân tách bởi "\n\n"
       const events = buffer.split("\n\n");
@@ -451,12 +481,91 @@ async function transformResponsesApiStream(responseBody, res) {
           if (delta) outputText += delta;
 
         } else if (type === "response.completed") {
-          emitFinish();
+          await emitFinish();
         }
         // Các events khác (response.created, in_progress, v.v.) → bỏ qua
       }
     }
-    if (!finished) emitFinish();
+    if (!finished && !res.writableEnded && !res.destroyed) await emitFinish();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function isResponseWritable(res) {
+  return !res.writableEnded && !res.destroyed;
+}
+
+function writeResponseChunk(res, chunk, reader = null) {
+  if (!chunk || !isResponseWritable(res)) return Promise.resolve(false);
+  if (typeof res.once !== "function" || typeof res.off !== "function") {
+    res.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve, reject) => {
+    const onDrain = () => cleanup(true);
+    const onClose = () => {
+      if (reader && typeof reader.cancel === "function") reader.cancel().catch(() => {});
+      cleanup(false);
+    };
+    const onError = (error) => cleanup(false, error);
+    const cleanup = (ok, error) => {
+      res.off("drain", onDrain);
+      res.off("close", onClose);
+      res.off("error", onError);
+      if (error) reject(error);
+      else resolve(ok);
+    };
+
+    res.once("close", onClose);
+    res.once("error", onError);
+    if (res.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)))) cleanup(true);
+    else res.once("drain", onDrain);
+  });
+}
+
+async function streamSanitizedSseResponse(responseBody, res) {
+  const reader = responseBody.getReader();
+  const decoder = new TextDecoder();
+  const sseSanitizer = createInternalInstructionSseSanitizer();
+  try {
+    while (isResponseWritable(res)) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const safeChunk = sseSanitizer.push(decoder.decode(value, { stream: true }));
+      if (safeChunk) await writeResponseChunk(res, safeChunk, reader);
+    }
+    if (!isResponseWritable(res)) return;
+
+    const decodedTail = decoder.decode();
+    if (decodedTail) {
+      const safeTailChunk = sseSanitizer.push(decodedTail);
+      if (safeTailChunk) await writeResponseChunk(res, safeTailChunk, reader);
+    }
+    const tail = sseSanitizer.flush();
+    if (tail) await writeResponseChunk(res, tail, reader);
+    if (isResponseWritable(res)) res.end();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function readBoundedTextResponse(responseBody, maxBytes = MAX_RESPONSE_BODY_BYTES) {
+  const reader = responseBody.getReader();
+  const decoder = new TextDecoder();
+  let raw = "";
+  let rawBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      rawBytes += value.byteLength;
+      ensureBufferLimit(rawBytes, maxBytes, "Upstream response body");
+      raw += decoder.decode(value, { stream: true });
+    }
+    raw += decoder.decode();
+    return raw;
   } finally {
     reader.releaseLock();
   }
@@ -487,6 +596,12 @@ async function runProxy(options) {
   const cachedTargetIPs = new Map();
   const IP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 phút – tránh stale IP khi Google rotate địa chỉ
 
+  function pruneTargetIPCache(now = Date.now()) {
+    for (const [host, cached] of cachedTargetIPs.entries()) {
+      if (!cached || now - cached.ts >= IP_CACHE_TTL_MS) cachedTargetIPs.delete(host);
+    }
+  }
+
   // Resolve host → IP dùng Google Public DNS để bypass /etc/hosts của chúng ta.
   // Ưu tiên IPv4 (A record); fallback sang IPv6 (AAAA) nếu không có A record.
   async function resolveTargetIP(targetHost) {
@@ -512,6 +627,7 @@ async function runProxy(options) {
       ip = addresses[0];
     }
 
+    pruneTargetIPCache();
     cachedTargetIPs.set(targetHost, { ip, ts: Date.now() });
     return ip;
   }
@@ -531,44 +647,45 @@ async function runProxy(options) {
         servername: targetHost,
         rejectUnauthorized: false,
       }, (forwardRes) => {
-        if (isModelBootstrapMergeRequest(req.url)) {
+        const collectAndSend = ({ shouldLog = false } = {}) => {
           const chunks = [];
-          forwardRes.on("data", (chunk) => chunks.push(chunk));
+          let total = 0;
+          forwardRes.on("data", (chunk) => {
+            total += chunk.length;
+            if (total > MAX_PASSTHROUGH_BUFFER_BYTES) {
+              forwardReq.destroy(new ProxyMemoryLimitError(`Passthrough response exceeds ${bytesLabel(MAX_PASSTHROUGH_BUFFER_BYTES)}`));
+              return;
+            }
+            chunks.push(chunk);
+          });
           forwardRes.on("end", () => {
-            const raw = Buffer.concat(chunks);
-            const modelSummary = summarizeAntigravityModelsResponse(raw, forwardRes.headers);
-            logPassthroughResponse({
-              req,
-              statusCode: forwardRes.statusCode,
-              targetHost,
-              requestPath,
-              raw,
-              headers: forwardRes.headers,
-              extra: `bytes=${raw.length} ${modelSummary}`,
-            });
+            const raw = Buffer.concat(chunks, total);
+            if (shouldLog) {
+              const modelSummary = isModelBootstrapMergeRequest(req.url)
+                ? summarizeAntigravityModelsResponse(raw, forwardRes.headers)
+                : "";
+              logPassthroughResponse({
+                req,
+                statusCode: forwardRes.statusCode,
+                targetHost,
+                requestPath,
+                raw,
+                headers: forwardRes.headers,
+                extra: `bytes=${raw.length}${modelSummary ? ` ${modelSummary}` : ""}`,
+              });
+            }
             res.writeHead(forwardRes.statusCode, forwardRes.headers);
             res.end(raw);
           });
+        };
+
+        if (isModelBootstrapMergeRequest(req.url)) {
+          collectAndSend({ shouldLog: true });
           return;
         }
 
         if (forwardRes.statusCode >= 400) {
-          const chunks = [];
-          forwardRes.on("data", (chunk) => chunks.push(chunk));
-          forwardRes.on("end", () => {
-            const raw = Buffer.concat(chunks);
-            logPassthroughResponse({
-              req,
-              statusCode: forwardRes.statusCode,
-              targetHost,
-              requestPath,
-              raw,
-              headers: forwardRes.headers,
-              extra: `bytes=${raw.length}`,
-            });
-            res.writeHead(forwardRes.statusCode, forwardRes.headers);
-            res.end(raw);
-          });
+          collectAndSend({ shouldLog: true });
           return;
         }
 
@@ -685,6 +802,13 @@ async function runProxy(options) {
         ? Math.max(0, Number(options.requestTimeoutMs))
         : 10 * 60 * 1000;
       const controller = requestTimeoutMs > 0 ? new AbortController() : null;
+      const abortUpstream = () => {
+        if (res.writableEnded) return;
+        if (controller && !controller.signal.aborted) {
+          controller.abort(new Error("client disconnected before upstream completed"));
+        }
+      };
+      res.on("close", abortUpstream);
       const timeoutId = controller
         ? setTimeout(() => controller.abort(new Error(`upstream request timeout after ${requestTimeoutMs}ms`)), requestTimeoutMs)
         : null;
@@ -706,6 +830,7 @@ async function runProxy(options) {
 
       if (!response.ok) {
         const errText = await sendUpstreamErrorResponse(res, response);
+        res.off("close", abortUpstream);
         logProxyError({ message: `upstream ${response.status}`, body: errText });
         return;
       }
@@ -727,46 +852,27 @@ async function runProxy(options) {
           ? sanitizeInternalInstructionJsonText(raw)
           : stripInternalInstructionLeaks(raw);
         res.end(safeBody);
+        res.off("close", abortUpstream);
         return;
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
       if (contentType.includes("text/event-stream")) {
-        const sseSanitizer = createInternalInstructionSseSanitizer();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const safeChunk = sseSanitizer.push(decoder.decode(value, { stream: true }));
-          if (safeChunk) res.write(Buffer.from(safeChunk));
-        }
-        const decodedTail = decoder.decode();
-        if (decodedTail) {
-          const safeTailChunk = sseSanitizer.push(decodedTail);
-          if (safeTailChunk) res.write(Buffer.from(safeTailChunk));
-        }
-        const tail = sseSanitizer.flush();
-        if (tail) res.write(Buffer.from(tail));
-        res.end();
+        await streamSanitizedSseResponse(response.body, res);
       } else {
-        let raw = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          raw += decoder.decode(value, { stream: true });
-        }
-        raw += decoder.decode();
+        const raw = await readBoundedTextResponse(response.body);
         const safeBody = contentType.includes("json")
           ? sanitizeInternalInstructionJsonText(raw)
           : stripInternalInstructionLeaks(raw);
-        res.end(safeBody);
+        if (isResponseWritable(res)) res.end(safeBody);
       }
 
+      res.off("close", abortUpstream);
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       logProxyOk({ model: targetModel, reasoning: body.reasoning_effort || "", elapsedSeconds: elapsed });
     } catch (error) {
+      if (typeof abortUpstream === "function") res.off("close", abortUpstream);
       logProxyError({ message: error.message });
-      if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
+      if (!res.headersSent) res.writeHead(error.statusCode || 500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: { message: error.message, type: "mitm_error" } }));
     }
   }
@@ -784,7 +890,16 @@ async function runProxy(options) {
       return;
     }
 
-    const bodyBuffer = await collectBodyRaw(req);
+    let bodyBuffer;
+    try {
+      bodyBuffer = await collectBodyRaw(req, { maxBytes: MAX_REQUEST_BODY_BYTES });
+    } catch (error) {
+      const statusCode = error.statusCode || 413;
+      logProxyError({ message: error.message, statusCode });
+      if (!res.headersSent) res.writeHead(statusCode, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: { message: error.message, type: "request_too_large" } }));
+      return;
+    }
 
     if (isAccountBootstrapRequest(req.url)) {
       return passthrough(req, res, bodyBuffer);

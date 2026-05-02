@@ -51,14 +51,7 @@ const {
 
 async function isPortListening(port) {
   if (IS_WIN) {
-    try {
-      const output = await execPowerShell(
-        `Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1`
-      );
-      return output.trim().length > 0;
-    } catch {
-      return false;
-    }
+    return (await pidsListeningOnPortWindows(port)).length > 0;
   }
 
   try {
@@ -242,10 +235,45 @@ async function pidsListeningOnPortUnix(port) {
   }
 }
 
+function localAddressMatchesPort(localAddress, port) {
+  const text = String(localAddress || "").trim();
+  const expected = String(Number(port));
+  if (!text) return false;
+  if (text.endsWith(`:${expected}`)) return true;
+  if (text.endsWith(`]:${expected}`)) return true;
+  return false;
+}
+
+function parseWindowsNetstatPids(stdout, port) {
+  const pids = [];
+  for (const line of String(stdout || "").split(/\r?\n/)) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 5) continue;
+    if (!/^TCP$/i.test(fields[0])) continue;
+    if (!/^LISTENING$/i.test(fields[3])) continue;
+    if (!localAddressMatchesPort(fields[1], port)) continue;
+    const pid = fields[4];
+    if (/^\d+$/.test(pid)) pids.push(pid);
+  }
+  return Array.from(new Set(pids));
+}
+
 async function pidsListeningOnPortWindows(port) {
+  const localPort = Number(port);
   try {
-    const stdout = await execPowerShell(`Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`);
-    return parsePidsFromOutput(stdout);
+    const stdout = await execPowerShell(
+      `Get-NetTCPConnection -LocalPort ${localPort} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`,
+      { timeout: 10_000 }
+    );
+    const pids = parsePidsFromOutput(stdout);
+    if (pids.length > 0) return pids;
+  } catch (_) {
+    // Fall through to netstat fallback below.
+  }
+
+  try {
+    const stdout = await execPromise("netstat -ano -p tcp", { timeout: 10_000 });
+    return parseWindowsNetstatPids(stdout, localPort);
   } catch (_) {
     return [];
   }
