@@ -38,7 +38,7 @@ jobs:
 
       # Build cả hai macOS binaries trước – prepare-tauri.js sẽ copy đúng cái vào resources
       - name: Build pkg – macOS (arm64 + x64)
-        run: npm run build:pkg:macos
+        run: npm run build:pkg:macos:all
         env:
           PKG_CACHE_PATH: ~/.pkg-cache
 
