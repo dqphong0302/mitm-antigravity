@@ -60,6 +60,22 @@ Use it as either:
 
 ---
 
+## Screenshots
+
+| Dashboard | Endpoint API |
+| --- | --- |
+| ![Dashboard Overview](docs/screenshots/dashboard-overview.png) | ![Endpoint API Settings](docs/screenshots/endpoint-api-settings.png) |
+
+| Model Mapping | Doctor |
+| --- | --- |
+| ![Model Mapping and Routing](docs/screenshots/model-mapping-routing.png) | ![Doctor Diagnostics](docs/screenshots/doctor-diagnostics.png) |
+
+| Claude Tools | Codex Tools |
+| --- | --- |
+| ![Claude Tool Integration](docs/screenshots/claude-tools-integration.png) | ![Codex Tool Integration](docs/screenshots/codex-tools-integration.png) |
+
+---
+
 ## Requirements
 
 | Use case | Requirements |
@@ -238,20 +254,19 @@ MITM Antigravity is intentionally conservative:
 - Unmapped model requests pass through to Google.
 - Only explicitly mapped generation requests are routed to your upstream endpoint.
 
-Built-in aliases:
+Primary built-in aliases:
 
 ```text
-gemini-2.5-pro              gemini-3.1-pro-high
-gemini-2.5-flash            gemini-3.1-pro-low
-gemini-2.5-flash-thinking   gemini-3.1-flash-lite
-gemini-2.5-flash-lite       gemini-3.1-flash-image
-gemini-3-flash              gemini-3-flash-agent
-gemini-3-flash-a            gemini-3-flash-b
-gemini-3-flash-c            gemini-3-pro-high
-gemini-3-pro-low            claude-sonnet-4-6
-claude-opus-4-6-thinking    gpt-oss-120b-medium
-tab_flash_lite_preview      tab_jump_flash_lite_preview
+gemini-3.1-pro-high
+gemini-3.1-pro-low
+gemini-3-flash
+claude-sonnet-4-6
+claude-opus-4-6-thinking
+gpt-oss-120b-medium
 ```
+
+> [!TIP]
+> 18 aliases are recognized in total (including Gemini 2.5 family, Flash variants, and Tab preview models). The GUI model mapping page shows all available aliases.
 
 Start with one-off mappings:
 
