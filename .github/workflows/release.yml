@@ -238,3 +238,7 @@ jobs:
             release-artifacts/windows-tauri/**/*.exe
             release-artifacts/windows-tauri/**/*.msi
             release-artifacts/windows-tauri/**/*.nsis.zip
+            scripts/kill-mitm-ag.bat
+            scripts/kill-mitm-ag-backend.bat
+            scripts/kill-mitm-ag.command
+            scripts/kill-mitm-ag.sh
