@@ -70,10 +70,6 @@ Use it as either:
 | --- | --- |
 | ![Model Mapping and Routing](docs/screenshots/model-mapping-routing.png) | ![Doctor Diagnostics](docs/screenshots/doctor-diagnostics.png) |
 
-| Claude Tools | Codex Tools |
-| --- | --- |
-| ![Claude Tool Integration](docs/screenshots/claude-tools-integration.png) | ![Codex Tool Integration](docs/screenshots/codex-tools-integration.png) |
-
 ---
 
 ## Requirements
