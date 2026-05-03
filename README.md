@@ -14,9 +14,10 @@
 </p>
 
 <p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/Version-0.8.0-blue?style=flat-square">
   <img alt="Node.js 20+" src="https://img.shields.io/badge/Node.js-20%2B-3c873a?style=flat-square">
   <img alt="Tauri" src="https://img.shields.io/badge/Desktop-Tauri-24c8db?style=flat-square">
-  <img alt="Platform" src="https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey?style=flat-square">
+  <img alt="Platform" src="https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square">
   <img alt="Status" src="https://img.shields.io/badge/Status-Local--first-7c3aed?style=flat-square">
 </p>
 
@@ -49,6 +50,8 @@ Use it as either:
 - 🧩 **Explicit model mapping** from Antigravity aliases to upstream models.
 - 🔌 **OpenAI-compatible upstream** endpoint support.
 - 🖥️ **Desktop control panel** with configuration, logs, diagnostics, and themes.
+- 🪟 **Windows installer** with NSIS hooks for clean install/upgrade/uninstall.
+- 🔑 **Cross-platform certificate trust** — automatic `NODE_EXTRA_CA_CERTS` on both macOS and Windows.
 - 🌐 **English/Vietnamese UI labels** for a smoother local workflow.
 - 📦 **Import/export configuration** as portable JSON.
 - 🧪 **Doctor diagnostics** for readiness checks and actionable troubleshooting.
@@ -117,9 +120,10 @@ Open **Proxy & System**:
 The GUI does **not** store your administrator password. Your OS will prompt for
 elevation when needed.
 
-On macOS, setup installs a local root CA and applies `NODE_EXTRA_CA_CERTS` for
-Antigravity. Fully quit and reopen Antigravity after applying setup so the app
-inherits the updated trust environment.
+On macOS, setup installs a local root CA and applies `NODE_EXTRA_CA_CERTS` via
+`launchctl`. On Windows, setup writes `NODE_EXTRA_CA_CERTS` to both User and
+Machine environment variables. Fully quit and reopen Antigravity after applying
+setup so the app inherits the updated trust environment.
 
 ---
 
@@ -237,12 +241,16 @@ MITM Antigravity is intentionally conservative:
 Built-in aliases:
 
 ```text
-gemini-3.1-pro-high
-gemini-3.1-pro-low
-gemini-3-flash
-claude-sonnet-4-6
-claude-opus-4-6-thinking
-gpt-oss-120b-medium
+gemini-2.5-pro              gemini-3.1-pro-high
+gemini-2.5-flash            gemini-3.1-pro-low
+gemini-2.5-flash-thinking   gemini-3.1-flash-lite
+gemini-2.5-flash-lite       gemini-3.1-flash-image
+gemini-3-flash              gemini-3-flash-agent
+gemini-3-flash-a            gemini-3-flash-b
+gemini-3-flash-c            gemini-3-pro-high
+gemini-3-pro-low            claude-sonnet-4-6
+claude-opus-4-6-thinking    gpt-oss-120b-medium
+tab_flash_lite_preview      tab_jump_flash_lite_preview
 ```
 
 Start with one-off mappings:
@@ -359,11 +367,23 @@ Build the native desktop app for the current OS:
 npm run build
 ```
 
+Build the Windows installer specifically:
+
+```bash
+npm run tauri:build:windows            # standard NSIS installer
+npm run tauri:build:windows:bootstrapper # includes WebView2 bootstrapper
+npm run tauri:build:windows:offline     # bundles WebView2 offline
+```
+
 On macOS, output is written under:
 
 ```text
 src-tauri/target/release/bundle/macos/MITM AG.app
 ```
+
+On Windows, the NSIS installer is output as `MITM.AG_<version>_x64-setup.exe`.
+The installer includes hooks that automatically stop running MITM AG processes
+before install/upgrade and before uninstall.
 
 Tauri bundles are native-platform builds. Build Windows installers on Windows or
 in a dedicated CI/cross-build environment.
@@ -385,7 +405,7 @@ mitm-antigravity/
 │   │   ├── constants.js      App-wide constants (aliases, loopback IPs…)
 │   │   └── index.js          Config read/write/merge (settings.json)
 │   ├── cert/
-│   │   └── index.js          TLS CA + server cert, system keychain trust
+│   │   └── index.js          TLS CA + server cert, system trust (macOS/Windows)
 │   ├── dns/
 │   │   └── index.js          /etc/hosts management (IPv4 + IPv6 blocking)
 │   ├── proxy/
@@ -395,7 +415,7 @@ mitm-antigravity/
 │   │   └── logger.js         Compact log formatters (MAP/OK/ERR/RETRY)
 │   ├── models/
 │   │   ├── index.js          Model mapping, extraction, alias resolution
-│   │   ├── list.js           Antigravity model list builder
+│   │   ├── list.js           Antigravity model list builder (18 aliases)
 │   │   └── serialization.js  Response decode/summarize
 │   ├── system/
 │   │   ├── index.js          exec, execWithSudo, execPowerShell, openBrowser
@@ -411,8 +431,18 @@ mitm-antigravity/
 │       ├── styles.js         CSS (rendered inline)
 │       └── template.js       HTML template
 ├── src-tauri/                Tauri 2 desktop app shell (Rust)
+│   └── installer-hooks.nsh   NSIS hooks (stop processes on install/uninstall)
+├── scripts/
+│   ├── build-pkg.js          Cross-platform pkg builder
+│   ├── copy-settings.js      Stripped settings for release
+│   ├── prepare-tauri.js      Tauri sidecar preparation
+│   ├── settings-sanitizer.js Remove secrets from settings
+│   ├── tauri-build-windows.js Windows-specific Tauri build
+│   ├── kill-mitm-ag.command  macOS: stop all MITM AG processes (double-click)
+│   ├── kill-mitm-ag.sh       Linux/macOS: stop backend process
+│   ├── kill-mitm-ag.bat      Windows: stop all MITM AG processes
+│   └── kill-mitm-ag-backend.bat  Windows: stop backend only
 ├── tauri-ui/                 Loading screen shown before GUI is ready
-├── scripts/                  Build helpers (pkg, Tauri prep, settings sanitizer)
 └── test/                     Node.js built-in test suite
 ```
 
@@ -454,6 +484,7 @@ npm run tauri:dev
 - Do not commit local secrets, API keys, generated certificates, or private configs.
 - Review logs before sharing them publicly, even though common secrets are redacted.
 - **API key storage**: the API key is stored in plaintext in `~/.mitm-antigravity/settings.json`. This file is user-readable only (`0600`). Do not store highly sensitive keys without additional OS-level protection.
+- **Windows**: `NODE_EXTRA_CA_CERTS` is set in both User and Machine environment variables. The NSIS installer stops running processes before install/upgrade/uninstall. If elevation is cancelled, the app provides actionable error messages.
 - **Linux**: certificate auto-install is not supported. Trust the CA manually: `sudo cp ~/.mitm-antigravity/cert/ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates`. DNS and proxy start/stop operations require the app to be run with `sudo`, or use the CLI `--password` flag.
 - The GUI does **not** store or transmit your administrator password. Elevation is handled entirely by OS dialogs (osascript on macOS, UAC on Windows).
 
@@ -463,8 +494,18 @@ To restore normal networking, stop the proxy and remove managed DNS entries:
 node index.js cleanup
 ```
 
+To stop all running MITM AG processes without the GUI, use the kill scripts:
+
+```bash
+# macOS — double-click or run in Terminal
+scripts/kill-mitm-ag.command
+
+# Windows — run in PowerShell/cmd
+scripts\kill-mitm-ag.bat
+```
+
 ---
 
 ## License
 
-Add your preferred license before publishing this repository.
+MIT
