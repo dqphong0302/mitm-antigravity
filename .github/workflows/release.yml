@@ -232,9 +232,7 @@ jobs:
             release-artifacts/linux-x64-pkg/mitm-antigravity-linux-x64
             release-artifacts/linux-arm64-pkg/mitm-antigravity-linux-arm64
             release-artifacts/macos-tauri-arm64/**/*.dmg
-            release-artifacts/macos-tauri-arm64/**/*.app.tar.gz
             release-artifacts/macos-tauri-x64/**/*.dmg
-            release-artifacts/macos-tauri-x64/**/*.app.tar.gz
             release-artifacts/windows-tauri/**/*.exe
             release-artifacts/windows-tauri/**/*.msi
             release-artifacts/windows-tauri/**/*.nsis.zip
