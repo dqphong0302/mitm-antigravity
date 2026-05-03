@@ -671,6 +671,7 @@ async function runProxy(options) {
                 requestPath,
                 raw,
                 headers: forwardRes.headers,
+                bodyBuffer,
                 extra: `bytes=${raw.length}${modelSummary ? ` ${modelSummary}` : ""}`,
               });
             }
@@ -679,7 +680,7 @@ async function runProxy(options) {
           });
         };
 
-        if (isModelBootstrapMergeRequest(req.url)) {
+        if (isAccountBootstrapRequest(req.url)) {
           collectAndSend({ shouldLog: true });
           return;
         }

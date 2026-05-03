@@ -297,6 +297,8 @@ test("placeholder model ids route only to mapped built-in aliases", () => {
   const options = {
     modelMap: {
       "claude-opus-4-6-thinking": "cx/opus",
+      "gemini-2.5-pro": "cx/gemini-2.5-pro",
+      "gemini-3.1-flash-lite": "cx/gemini-3.1-flash-lite",
       "custom-router-model": "cx/custom-router-model",
     },
   };
@@ -307,6 +309,8 @@ test("placeholder model ids route only to mapped built-in aliases", () => {
   assert.equal(mitm.getMappedEntry("MODEL_PLACEHOLDER_M26", options).model, "cx/opus");
   assert.equal(mitm.getMappedEntry("291", options).model, "cx/opus");
   assert.equal(mitm.getMappedEntry("claude-opus-4-6-thinking", options).model, "cx/opus");
+  assert.equal(mitm.getMappedEntry("MODEL_GOOGLE_GEMINI_2_5_PRO", options).model, "cx/gemini-2.5-pro");
+  assert.equal(mitm.getMappedEntry("MODEL_PLACEHOLDER_M50", options).model, "cx/gemini-3.1-flash-lite");
   assert.equal(mitm.getMappedEntry("custom-router-model", options), null);
 });
 
@@ -330,7 +334,7 @@ test("chat model detection handles nested Antigravity model names", () => {
   assert.match(mitm.summarizeRequestBodyForLog(body), /defaultAgentModelId=/);
 });
 
-test("normalizeModelMap keeps only the six mappable built-in aliases", () => {
+test("normalizeModelMap keeps built-in aliases and drops custom mappings", () => {
   const result = mitm.normalizeModelMap({
     "claude-opus-4-6-thinking": "ag/claude-opus-4-6-thinking",
     "gemini-3-flash": { model: "cx/gemini-3-flash", reasoning_effort: "low" },
@@ -342,7 +346,7 @@ test("normalizeModelMap keeps only the six mappable built-in aliases", () => {
   assert.equal(result["claude-opus-4-6-thinking"], undefined);
   assert.deepEqual(result["gemini-3-flash"], { model: "cx/gemini-3-flash", reasoning_effort: "low" });
   assert.equal(result["gpt-oss-120b-medium"], "cx/gpt-oss");
-  assert.equal(result["gemini-2.5-pro"], undefined);
+  assert.equal(result["gemini-2.5-pro"], "cx/not-mappable");
   assert.equal(result["custom-router-model"], undefined);
 });
 
@@ -389,6 +393,31 @@ test("chat passthrough logging records unmapped model names", () => {
   const added = messages.join("\n");
   assert.match(added, /CHAT PASS/);
   assert.match(added, /model=gemini-3-flash-agent/);
+});
+
+test("auth passthrough logging records successful bootstrap requests", () => {
+  const messages = [];
+  const originalLog = console.log;
+
+  try {
+    console.log = (message) => messages.push(String(message));
+    mitm.logPassthroughResponse({
+      req: { method: "POST", url: "/v1internal:fetchUserInfo" },
+      statusCode: 200,
+      targetHost: "cloudcode-pa.googleapis.com",
+      requestPath: "/v1internal:fetchUserInfo",
+      raw: Buffer.from("{}"),
+      headers: { "content-type": "application/json" },
+      extra: "bytes=2",
+    });
+  } finally {
+    console.log = originalLog;
+  }
+
+  const added = messages.join("\n");
+  assert.match(added, /AUTH PASS/);
+  assert.match(added, /fetchUserInfo/);
+  assert.match(added, /bytes=2/);
 });
 
 test("readConfig keeps legacy runtime config and drops custom model mappings", () => {
@@ -451,6 +480,26 @@ test("PowerShell single-quote helper escapes embedded quotes", () => {
   assert.equal(mitm.powershellSingleQuote("C:\\Users\\O'Brien\\app"), "'C:\\Users\\O''Brien\\app'");
 });
 
+test("Windows env scripts can target User and Machine scopes", () => {
+  assert.match(mitm.windowsUserEnvGetScript("NODE_EXTRA_CA_CERTS"), /'User'/);
+  assert.match(mitm.windowsUserEnvSetScript("NODE_EXTRA_CA_CERTS", "C:\\ca.crt"), /'User'/);
+  assert.match(mitm.windowsEnvGetScript("NODE_EXTRA_CA_CERTS", "Machine"), /'Machine'/);
+  assert.match(mitm.windowsEnvSetScript("NODE_EXTRA_CA_CERTS", "C:\\ca.crt", "Machine"), /'Machine'/);
+  assert.doesNotMatch(mitm.windowsEnvSetScript("NODE_EXTRA_CA_CERTS", "C:\\ca.crt", "Machine"), /@'/);
+});
+
+test("elevated PowerShell errors prefer captured launcher output", () => {
+  const message = mitm.elevatedPowerShellErrorMessage(
+    { code: 1 },
+    "Start failed",
+    "stdout noise",
+    "stderr noise"
+  );
+
+  assert.match(message, /Elevated PowerShell failed \(exit 1\): Start failed/);
+  assert.doesNotMatch(message, /Command failed: powershell/);
+});
+
 test("safe child process env clears pkg self-spawn marker", () => {
   const originalPkg = process.pkg;
   try {
@@ -492,6 +541,14 @@ test("Windows cmd redirect args preserve quoted executable and log paths", () =>
   );
 });
 
+test("Windows stop proxy script does not create an empty pipe", () => {
+  const script = mitm.windowsStopProxyScript(443);
+
+  assert.match(script, /Get-NetTCPConnection -LocalPort 443/);
+  assert.match(script, /\| Select-Object -ExpandProperty OwningProcess -Unique/);
+  assert.doesNotMatch(script, /;\s*\|/);
+});
+
 test("Windows autostart task script uses highest privileges and normalized working directory", () => {
   const script = mitm.windowsRegisterAutoStartScript([
     "C:\\Program Files\\nodejs\\node.exe",
@@ -514,6 +571,39 @@ test("Windows autostart status script treats disabled scheduled task as disabled
   assert.match(script, /Get-ScheduledTask/);
   assert.match(script, /State\) -eq 'Disabled'|State -eq 'Disabled'/);
   assert.match(script, /exit 2/);
+});
+
+test("Windows installer hook stops running MITM AG processes before install", () => {
+  const tauriConfig = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "src-tauri", "tauri.conf.json"), "utf8"));
+  const hookPath = tauriConfig.bundle.windows.nsis.installerHooks;
+  const hook = fs.readFileSync(path.join(__dirname, "..", "src-tauri", hookPath), "utf8");
+
+  assert.equal(hookPath, "installer-hooks.nsh");
+  assert.match(hook, /NSIS_HOOK_PREINSTALL/);
+  assert.match(hook, /NSIS_HOOK_PREUNINSTALL/);
+  assert.match(hook, /mitm-ag-backend\.exe/);
+  assert.match(hook, /mitm-ag-tauri\.exe/);
+  assert.doesNotMatch(hook, /Antigravity\.exe/);
+});
+
+test("manual kill scripts stop MITM AG backend and GUI only", () => {
+  const win = fs.readFileSync(path.join(__dirname, "..", "scripts", "kill-mitm-ag.bat"), "utf8");
+  const winCompat = fs.readFileSync(path.join(__dirname, "..", "scripts", "kill-mitm-ag-backend.bat"), "utf8");
+  const mac = fs.readFileSync(path.join(__dirname, "..", "scripts", "kill-mitm-ag.command"), "utf8");
+  const macCompat = fs.readFileSync(path.join(__dirname, "..", "scripts", "kill-mitm-ag.sh"), "utf8");
+
+  assert.match(win, /mitm-ag-backend\.exe/);
+  assert.match(win, /mitm-ag-tauri\.exe/);
+  assert.match(win, /MITM AG\.exe/);
+  assert.match(winCompat, /kill-mitm-ag\.bat/);
+  assert.doesNotMatch(win, /Antigravity\.exe/);
+
+  assert.match(mac, /mitm-ag-backend/);
+  assert.match(mac, /MITM AG\.app/);
+  assert.match(mac, /MITM Antigravity\.app/);
+  assert.match(macCompat, /kill-mitm-ag\.command/);
+  assert.equal(mac.includes('tell application "Antigravity"'), false);
+  assert.equal(mac.includes("/Antigravity.app/Contents/MacOS/"), false);
 });
 
 test("macOS LaunchAgent commands use bootstrap domain instead of deprecated load", () => {
@@ -682,6 +772,10 @@ test("config tab combines model loading and saving", () => {
   const html = mitm.guiHtml();
 
   assert.match(html, /Test, Load & Save/);
+  assert.match(html, /id="applyDnsBtn"/);
+  assert.match(html, /id="applyAppTrustBtn"/);
+  assert.match(html, /Enable Antigravity Cert/);
+  assert.doesNotMatch(html, /Apply DNS & Cert/);
   assert.doesNotMatch(html, /id="saveBtn"/);
   assert.doesNotMatch(html, /newAlias/);
   assert.doesNotMatch(html, /Create custom model/);
@@ -703,6 +797,18 @@ test("config tab combines model loading and saving", () => {
 test("GUI client script is valid browser JavaScript", () => {
   const { guiClientScript } = require("../src/gui/client");
   assert.doesNotThrow(() => new vm.Script(guiClientScript()));
+});
+
+test("GUI and wizard expose the six primary mapping aliases", () => {
+  assert.deepEqual(mitm.PRIMARY_ANTIGRAVITY_ALIASES, [
+    "gemini-3.1-pro-high",
+    "gemini-3.1-pro-low",
+    "gemini-3-flash",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
+  ]);
+  assert.equal(mitm.MAPPABLE_ANTIGRAVITY_ALIASES.length > mitm.PRIMARY_ANTIGRAVITY_ALIASES.length, true);
 });
 
 test("GUI route table finds known routes and rejects unknown routes", () => {
@@ -735,6 +841,7 @@ test("GUI route table finds known routes and rejects unknown routes", () => {
   assert.equal(findGuiRoute(routes, "GET", "/api/bootstrap").handler, handlers.handleBootstrap);
   assert.equal(findGuiRoute(routes, "POST", "/api/start-proxy").handler, handlers.handleStartProxy);
   assert.equal(findGuiRoute(routes, "POST", "/api/stop-and-cleanup").handler, handlers.handleStopAndCleanup);
+  assert.equal(findGuiRoute(routes, "POST", "/api/apply-app-trust").handler, handlers.handleApplyAppTrust);
   assert.equal(findGuiRoute(routes, "DELETE", "/api/bootstrap"), null);
   assert.equal(findGuiRoute(routes, "GET", "/api/missing"), null);
 });

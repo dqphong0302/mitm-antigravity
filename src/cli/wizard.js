@@ -1,6 +1,6 @@
 const readline = require("readline");
 
-const { MAPPABLE_ANTIGRAVITY_ALIASES } = require("../config/constants");
+const { PRIMARY_ANTIGRAVITY_ALIASES } = require("../config/constants");
 const { readConfig, redactConfig, writeConfig } = require("../config");
 
 function createPromptInterface(input = process.stdin, output = process.stdout) {
@@ -69,7 +69,7 @@ async function runWizard(options = {}) {
 
     write("\nModel mappings");
     write("Leave blank to keep the current mapping. Type '-' to clear a mapping.");
-    for (const alias of MAPPABLE_ANTIGRAVITY_ALIASES) {
+    for (const alias of PRIMARY_ANTIGRAVITY_ALIASES) {
         const currentMapping = current.modelMap?.[alias] || "";
         const value = await askQuestion(rl, `${alias} -> [${currentMapping || "pass through"}]: `);
         if (value === "-") answers.modelMap[alias] = "";

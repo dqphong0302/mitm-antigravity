@@ -9,10 +9,6 @@ const flavorConfigs = {
   offline: path.join("src-tauri", "tauri.windows.offline.conf.json"),
 };
 
-function executable(name) {
-  return process.platform === "win32" ? `${name}.cmd` : name;
-}
-
 function targetFromArgs(args) {
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -67,15 +63,15 @@ const env = {
   TAURI_TARGET_TRIPLE: target,
 };
 
-execFileSync(executable("node"), [path.join("scripts", "build-pkg.js"), pkgTargetFromTriple(target)], {
+execFileSync(process.execPath, [path.join("scripts", "build-pkg.js"), pkgTargetFromTriple(target)], {
   cwd: root,
   env,
   stdio: "inherit",
 });
 
 const configArgs = configArgsForFlavor(flavor);
-execFileSync(executable("npx"), [
-  "tauri",
+execFileSync(process.execPath, [
+  path.join(root, "node_modules", "@tauri-apps", "cli", "tauri.js"),
   "build",
   ...(hasTargetArg ? [] : ["--target", target]),
   ...configArgs,

@@ -461,8 +461,8 @@ fn create_main_window(app: &tauri::App) -> Result<tauri::WebviewWindow, String> 
     let url = Url::parse(GUI_URL).map_err(|error| error.to_string())?;
     WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
         .title("MITM AG")
-        .inner_size(1180.0, 820.0)
-        .min_inner_size(980.0, 680.0)
+        .inner_size(1180.0, 720.0)
+        .min_inner_size(980.0, 560.0)
         .build()
         .map_err(|error| error.to_string())
 }

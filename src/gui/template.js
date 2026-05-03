@@ -94,7 +94,8 @@ function guiHtml() {
               <h2 class="panel-title" data-i18n="dashboard.system">System actions</h2>
             </div>
             <div class="system-grid">
-              <button id="applyDnsBtn" type="button" data-i18n="button.applyDns">Apply DNS & Cert</button>
+              <button id="applyDnsBtn" type="button" data-i18n="button.applyDns">DNS</button>
+              <button class="secondary" id="applyAppTrustBtn" type="button" data-i18n="button.applyAppTrust">Enable Antigravity Cert</button>
               <button class="secondary" id="startProxyOnlyBtn" type="button" data-i18n="button.startProxyOnly">Start Proxy Only</button>
               <button class="danger" id="stopCleanupBtn" type="button" data-i18n="button.stopCleanup">Stop & Remove DNS</button>
               <button class="secondary" id="removeDnsBtn" type="button" data-i18n="button.removeDns">Remove DNS</button>

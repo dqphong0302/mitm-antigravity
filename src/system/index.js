@@ -54,6 +54,23 @@ function powershellSingleQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
+function compactProcessOutput(value) {
+  return String(value || "").trim();
+}
+
+function elevatedPowerShellErrorMessage(error, captured, stdout, stderr) {
+  const details = [
+    compactProcessOutput(captured),
+    compactProcessOutput(stderr),
+    compactProcessOutput(stdout),
+  ].filter(Boolean).join("\n");
+  const exitText = error && typeof error.code !== "undefined" ? ` (exit ${error.code})` : "";
+  const fallback = error && error.killed
+    ? "Timed out waiting for the Windows administrator prompt or elevated PowerShell."
+    : "No output captured. Approve the Windows administrator prompt, or run MITM Antigravity as administrator.";
+  return `Elevated PowerShell failed${exitText}: ${details || fallback}`;
+}
+
 function windowsCommandLineArgument(value) {
   const text = String(value);
   if (text.length === 0) return "\"\"";
@@ -143,16 +160,19 @@ function execPowerShell(script, { elevated = false } = {}) {
   const nonce = `${process.pid}-${Date.now()}`;
   const outFile = path.join(os.tmpdir(), `mitm-ps-${nonce}.txt`);
   const scriptFile = path.join(os.tmpdir(), `mitm-ps-${nonce}.ps1`);
-  const outFilePs = outFile.replace(/\\/g, "\\\\").replace(/'/g, "''");
-  const scriptFilePs = scriptFile.replace(/\\/g, "\\\\").replace(/'/g, "''");
+  const outFilePs = powershellSingleQuote(outFile);
+  const scriptFilePs = powershellSingleQuote(scriptFile);
 
   const wrapped = [
-    `$ErrorActionPreference = 'Continue'`,
+    `$ErrorActionPreference = 'Stop'`,
     `try {`,
+    `  $global:LASTEXITCODE = 0`,
     `  $output = & { ${script} } 2>&1`,
-    `  $output | Out-File -FilePath '${outFilePs}' -Encoding UTF8 -Force`,
+    `  $exitCode = if ($LASTEXITCODE -is [int]) { $LASTEXITCODE } else { 0 }`,
+    `  $output | Out-File -FilePath ${outFilePs} -Encoding UTF8 -Force`,
+    `  if ($exitCode -ne 0) { exit $exitCode }`,
     `} catch {`,
-    `  $_ | Out-File -FilePath '${outFilePs}' -Encoding UTF8 -Force`,
+    `  $_ | Out-String | Out-File -FilePath ${outFilePs} -Encoding UTF8 -Force`,
     `  exit 1`,
     `}`,
   ].join("; ");
@@ -166,17 +186,24 @@ function execPowerShell(script, { elevated = false } = {}) {
     "v1.0",
     "powershell.exe"
   );
-  const elevatedArgs = `-NoProfile -ExecutionPolicy Bypass -File '${scriptFilePs}'`;
+  const elevatedArgs = `-NoProfile -ExecutionPolicy Bypass -File ${scriptFilePs}`;
   const launcher = [
-    `$psi = [System.Diagnostics.ProcessStartInfo]::new()`,
-    `$psi.FileName = ${powershellSingleQuote(powershellPath)}`,
-    `$psi.Arguments = ${powershellSingleQuote(elevatedArgs)}`,
-    `$psi.UseShellExecute = $true`,
-    `$psi.Verb = 'runas'`,
-    `$psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden`,
-    `$p = [System.Diagnostics.Process]::Start($psi)`,
-    `$p.WaitForExit()`,
-    `exit $p.ExitCode`,
+    `$ErrorActionPreference = 'Stop'`,
+    `try {`,
+    `  $psi = [System.Diagnostics.ProcessStartInfo]::new()`,
+    `  $psi.FileName = ${powershellSingleQuote(powershellPath)}`,
+    `  $psi.Arguments = ${powershellSingleQuote(elevatedArgs)}`,
+    `  $psi.UseShellExecute = $true`,
+    `  $psi.Verb = 'runas'`,
+    `  $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden`,
+    `  $p = [System.Diagnostics.Process]::Start($psi)`,
+    `  if ($null -eq $p) { throw 'Elevation was cancelled or failed to start.' }`,
+    `  $p.WaitForExit()`,
+    `  exit $p.ExitCode`,
+    `} catch {`,
+    `  $_ | Out-String | Out-File -FilePath ${outFilePs} -Encoding UTF8 -Force`,
+    `  exit 1`,
+    `}`,
   ].join("; ");
   const launcherEncoded = Buffer.from(launcher, "utf16le").toString("base64");
   const elevatedCmd = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${launcherEncoded}`;
@@ -193,7 +220,7 @@ function execPowerShell(script, { elevated = false } = {}) {
       try { fs.unlinkSync(scriptFile); } catch { /* best effort */ }
 
       if (error) {
-        reject(new Error(`Elevated PowerShell failed: ${captured || stderr || error.message}`));
+        reject(new Error(elevatedPowerShellErrorMessage(error, captured, stdout, stderr)));
       } else {
         resolve(captured || stdout);
       }
@@ -205,6 +232,7 @@ module.exports = {
   execPowerShell,
   execPromise,
   execWithSudo,
+  elevatedPowerShellErrorMessage,
   isWindowsElevated,
   isRoot,
   openBrowser,

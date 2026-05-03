@@ -5,7 +5,7 @@ const {
   DEFAULT_REMOTE,
   IS_MAC,
   IS_WIN,
-  MAPPABLE_ANTIGRAVITY_ALIASES,
+  PRIMARY_ANTIGRAVITY_ALIASES,
 } = require("../config/constants");
 const {
   bundledSettingsPath,
@@ -182,7 +182,7 @@ async function handleBootstrap(res) {
     bundledSettingsPath: bundledSettingsPath(),
     legacyConfigPath: configPath(),
     machine: machineId(),
-    antigravityAliases: MAPPABLE_ANTIGRAVITY_ALIASES,
+    antigravityAliases: PRIMARY_ANTIGRAVITY_ALIASES,
     presets: guiPresets(),
     // Platform info cho GUI biết có cần hiện ô nhập sudo password không
     platform: {
@@ -508,11 +508,11 @@ function buildDoctorReport(status) {
   ];
   const recommendations = [];
   if (status.dnsConfigured && !status.proxyListening) recommendations.push("DNS redirect is active while the proxy is stopped. Use Stop & Remove DNS before leaving the tool.");
-  if (!status.dnsConfigured) recommendations.push("DNS is not active. Use Apply DNS & Cert when you want Antigravity traffic to use the proxy.");
+  if (!status.dnsConfigured) recommendations.push("DNS is not active. Use DNS when you want Antigravity traffic to use the proxy.");
   if (!status.proxyListening) recommendations.push("Proxy is not running. Use Start Proxy & Trust or Start Proxy Only depending on whether setup is already complete.");
-  if (!status.certExists) recommendations.push("Managed CA certificate is missing or still uses the legacy format. Use Apply DNS & Cert.");
-  if (!status.certInstalled && status.certExists) recommendations.push("Certificate exists but is not trusted by the system. Use Apply DNS & Cert.");
-  if (status.nodeTrustSupported && !status.nodeTrustApplied) recommendations.push("Antigravity Node trust is missing. Use Apply DNS & Cert, then restart Antigravity.");
+  if (!status.certExists) recommendations.push("Managed CA certificate is missing or still uses the legacy format. Use DNS.");
+  if (!status.certInstalled && status.certExists) recommendations.push("Certificate exists but is not trusted by the system. Use DNS.");
+  if (status.nodeTrustSupported && !status.nodeTrustApplied) recommendations.push("Antigravity Node trust is missing. Use Enable Antigravity Cert, then restart Antigravity.");
   if (!status.routerUrl) recommendations.push("Router URL is empty. Configure endpoint and authentication first.");
   if (status.mappedModels === 0) recommendations.push("No built-in models are mapped. Add model mappings or enable passthrough intentionally.");
   if (status.portOwnerText && !status.proxyListening) recommendations.push(`Port ${status.port || 443} is occupied by ${status.portOwnerText}. Stop that process before starting MITM Antigravity.`);

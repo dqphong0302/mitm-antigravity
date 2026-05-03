@@ -283,6 +283,13 @@ function parsePidsFromOutput(stdout) {
   return Array.from(new Set(String(stdout || "").split(/\s+/).map((pid) => pid.trim()).filter(Boolean)));
 }
 
+function windowsStopProxyScript(port) {
+  return [
+    `$p = Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`,
+    `if ($p) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }`,
+  ].join("; ");
+}
+
 async function killPidsUnix(pids, sudoPassword) {
   const command = `kill ${pids.map((pid) => shellQuote(pid)).join(" ")}`;
   try {
@@ -303,12 +310,7 @@ async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET
     // Proxy chạy với admin token (Start-Process -Verb RunAs).
     // Get-NetTCPConnection từ non-elevated có thể thấy port, nhưng Stop-Process cần admin.
     // → Gộp find + kill vào 1 elevated script = 1 UAC prompt duy nhất.
-    const psKill = [
-      `$p = Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue`,
-      `      | Select-Object -ExpandProperty OwningProcess -Unique`,
-      `if ($p) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }`,
-    ].join("; ");
-    await execPowerShell(psKill, { elevated: !(await isWindowsElevated()) });
+    await execPowerShell(windowsStopProxyScript(port), { elevated: !(await isWindowsElevated()) });
   } else {
     if (IS_MAC && Number(port) < 1024 && fs.existsSync(macProxyLaunchDaemonPath())) {
       // removePlist=true (Stop & Remove DNS): xóa plist để proxy không auto-start sau reboot
@@ -364,6 +366,7 @@ module.exports = {
   startProxyDetached,
   stopProxyByPort,
   waitForProxyHealth,
+  windowsStopProxyScript,
   windowsAutoStartStatusScript,
   windowsRefreshAutoStartPath,
   windowsRegisterAutoStartScript,

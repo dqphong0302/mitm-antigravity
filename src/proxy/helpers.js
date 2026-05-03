@@ -97,15 +97,30 @@ function passthroughLogLabel(reqUrl) {
     return "PASS";
 }
 
-function logPassthroughResponse({ req, statusCode, targetHost, requestPath, raw, headers }) {
+function logPassthroughResponse({ req, statusCode, targetHost, requestPath, raw, headers, bodyBuffer, extra = "" }) {
     if (statusCode >= 400) {
+        const model = isChatRequestUrl(req && req.url)
+            ? (extractModelFromBody(bodyBuffer) || extractModelFromUrl(req.url) || "unknown")
+            : "";
         logProxyError({
-            message: "passthrough failed",
+            message: model ? `passthrough failed model=${model}` : "passthrough failed",
             statusCode,
             method: req.method,
             targetHost,
             requestPath,
             body: responseBodySnippetForLog(raw, headers) || "-",
+        });
+        return;
+    }
+
+    if (isAccountBootstrapRequest(req && req.url)) {
+        logProxyPass({
+            label: passthroughLogLabel(req.url),
+            statusCode,
+            method: req.method,
+            targetHost,
+            requestPath,
+            extra,
         });
     }
 }

@@ -14,12 +14,21 @@ const MAPPABLE_ALIAS_SET = new Set(MAPPABLE_ANTIGRAVITY_ALIASES);
 const BUILTIN_MODEL_VALUE_ALIASES = new Map([
   ["MODEL_PLACEHOLDER_M37", "gemini-3.1-pro-high"],
   ["MODEL_PLACEHOLDER_M36", "gemini-3.1-pro-low"],
+  ["MODEL_PLACEHOLDER_M50", "gemini-3.1-flash-lite"],
+  ["MODEL_PLACEHOLDER_M21", "gemini-3.1-flash-image"],
   ["MODEL_PLACEHOLDER_M18", "gemini-3-flash"],
+  ["MODEL_PLACEHOLDER_M84", "gemini-3-flash-agent"],
   ["MODEL_PLACEHOLDER_M35", "claude-sonnet-4-6"],
   ["MODEL_PLACEHOLDER_M26", "claude-opus-4-6-thinking"],
   ["291", "claude-opus-4-6-thinking"],
+  ["MODEL_GOOGLE_GEMINI_2_5_PRO", "gemini-2.5-pro"],
+  ["MODEL_GOOGLE_GEMINI_2_5_FLASH", "gemini-2.5-flash"],
+  ["MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING", "gemini-2.5-flash-thinking"],
+  ["MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE", "gemini-2.5-flash-lite"],
   ["MODEL_OPENAI_GPT_OSS_120B_MEDIUM", "gpt-oss-120b-medium"],
   ["342", "gpt-oss-120b-medium"],
+  ["MODEL_PLACEHOLDER_M19", "tab_flash_lite_preview"],
+  ["MODEL_PLACEHOLDER_M28", "tab_jump_flash_lite_preview"],
 ]);
 
 const MODEL_FIELD_NAMES = new Set([

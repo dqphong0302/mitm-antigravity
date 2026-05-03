@@ -45,6 +45,9 @@
             "minimumSystemVersion": "10.13"
         },
         "windows": {
+            "nsis": {
+                "installerHooks": "installer-hooks.nsh"
+            },
             "webviewInstallMode": {
                 "type": "embedBootstrapper",
                 "silent": true

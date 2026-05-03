@@ -276,7 +276,7 @@ function guiClientScript() {
     }
 
     function setSystemButtons(disabled) {
-      ["proxyToggleBtn", "applyDnsBtn", "startProxyOnlyBtn", "stopCleanupBtn", "removeDnsBtn", "forceKillPortBtn", "enableAutoStartBtn", "disableAutoStartBtn", "uninstallCertBtn", "runDoctorBtn"].forEach((id) => {
+      ["proxyToggleBtn", "applyDnsBtn", "applyAppTrustBtn", "startProxyOnlyBtn", "stopCleanupBtn", "removeDnsBtn", "forceKillPortBtn", "enableAutoStartBtn", "disableAutoStartBtn", "uninstallCertBtn", "runDoctorBtn"].forEach((id) => {
         if ($(id)) $(id).disabled = disabled;
       });
     }
@@ -448,6 +448,24 @@ function guiClientScript() {
         if (result.nodeTrust && result.nodeTrust.antigravityRunning) restartText = " " + t("message.restartAntigravityRunning");
         else if (result.nodeTrust && result.nodeTrust.restartRequired) restartText = " " + t("message.restartAntigravity");
         showStatus("systemStatus", parts.join(", ") + "." + restartText, "ok");
+        loadStatus();
+      } catch (error) {
+        showStatus("systemStatus", t("error.prefix", { message: error.message }), "err");
+      } finally {
+        setSystemButtons(false);
+      }
+    }
+
+    async function applyAppTrust() {
+      setSystemButtons(true);
+      showStatus("systemStatus", t("message.applyingAppTrust"), "loading");
+      try {
+        const result = await api("/api/apply-app-trust", { method: "POST", body: elevatedBody() });
+        const nodeTrust = result.nodeTrust || {};
+        let message = nodeTrust.supported === false ? t("message.nodeTrustNotSupported") : t("message.nodeTrustActive");
+        if (nodeTrust.antigravityRunning) message += ". " + t("message.restartAntigravityRunning");
+        else if (nodeTrust.restartRequired) message += ". " + t("message.restartAntigravity");
+        showStatus("systemStatus", message, nodeTrust.supported === false ? "warn" : "ok");
         loadStatus();
       } catch (error) {
         showStatus("systemStatus", t("error.prefix", { message: error.message }), "err");
@@ -700,6 +718,7 @@ function guiClientScript() {
       $("logFilter").addEventListener("change", applyLogFilter);
       $("proxyToggleBtn").addEventListener("click", toggleProxy);
       $("applyDnsBtn").addEventListener("click", applyDns);
+      $("applyAppTrustBtn").addEventListener("click", applyAppTrust);
       $("startProxyOnlyBtn").addEventListener("click", startProxyOnly);
       $("stopCleanupBtn").addEventListener("click", stopAndCleanup);
       $("removeDnsBtn").addEventListener("click", removeDns);

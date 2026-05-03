@@ -14,12 +14,26 @@ function models() {
 
 function modelDisplayName(alias, mappedModel) {
     const names = {
+        "gemini-2.5-pro": "Gemini 2.5 Pro",
+        "gemini-2.5-flash": "Gemini 2.5 Flash",
+        "gemini-2.5-flash-thinking": "Gemini 2.5 Flash Thinking",
+        "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
         "gemini-3.1-pro-high": "Gemini 3.1 Pro High",
         "gemini-3.1-pro-low": "Gemini 3.1 Pro Low",
+        "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+        "gemini-3.1-flash-image": "Gemini 3.1 Flash Image",
         "gemini-3-flash": "Gemini 3 Flash",
+        "gemini-3-flash-agent": "Gemini 3 Flash Agent",
+        "gemini-3-flash-a": "Gemini 3 Flash A",
+        "gemini-3-flash-b": "Gemini 3 Flash B",
+        "gemini-3-flash-c": "Gemini 3 Flash C",
         "claude-sonnet-4-6": "Claude Sonnet 4.6",
         "claude-opus-4-6-thinking": "Claude Opus 4.6 Thinking",
         "gpt-oss-120b-medium": "GPT OSS 120B Medium",
+        "gemini-3-pro-high": "Gemini 3 Pro High",
+        "gemini-3-pro-low": "Gemini 3 Pro Low",
+        "tab_flash_lite_preview": "Tab Flash Lite Preview",
+        "tab_jump_flash_lite_preview": "Tab Jump Flash Lite Preview",
     };
     const base = names[alias] || alias;
     return mappedModel ? `${base} (${mappedModel})` : base;

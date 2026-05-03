@@ -36,7 +36,7 @@ const ANTIGRAVITY_ALIASES = [
   "tab_flash_lite_preview",
   "tab_jump_flash_lite_preview",
 ];
-const MAPPABLE_ANTIGRAVITY_ALIASES = [
+const PRIMARY_ANTIGRAVITY_ALIASES = [
   "gemini-3.1-pro-high",
   "gemini-3.1-pro-low",
   "gemini-3-flash",
@@ -44,6 +44,7 @@ const MAPPABLE_ANTIGRAVITY_ALIASES = [
   "claude-opus-4-6-thinking",
   "gpt-oss-120b-medium",
 ];
+const MAPPABLE_ANTIGRAVITY_ALIASES = [...ANTIGRAVITY_ALIASES];
 
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
@@ -92,4 +93,5 @@ module.exports = {
   LOOPBACK_IPV4,
   LOOPBACK_IPV6,
   MAPPABLE_ANTIGRAVITY_ALIASES,
+  PRIMARY_ANTIGRAVITY_ALIASES,
 };

@@ -6,9 +6,10 @@ const forge = require("node-forge");
 
 const { DEFAULT_TARGET, IS_MAC, IS_WIN } = require("../config/constants");
 const { appDir, normalizeTargetHosts, targetHostsFrom } = require("../config");
-const { execPowerShell, execPromise, execWithSudo, shellQuote } = require("../system");
+const { execPowerShell, execPromise, execWithSudo, isWindowsElevated, powershellSingleQuote, shellQuote } = require("../system");
 
 const MAC_SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain";
+const NODE_EXTRA_CA_CERTS = "NODE_EXTRA_CA_CERTS";
 
 function macLoginKeychain() {
   return path.join(os.homedir(), "Library", "Keychains", "login.keychain-db");
@@ -116,24 +117,96 @@ async function getLaunchctlEnv(name) {
   }
 }
 
+function windowsEnvGetScript(name, target = "User") {
+  return `Write-Output ([Environment]::GetEnvironmentVariable(${powershellSingleQuote(name)}, ${powershellSingleQuote(target)}))`;
+}
+
+function windowsEnvSetScript(name, value, target = "User") {
+  return `[Environment]::SetEnvironmentVariable(${powershellSingleQuote(name)}, ${powershellSingleQuote(value)}, ${powershellSingleQuote(target)})`;
+}
+
+function windowsUserEnvGetScript(name) {
+  return windowsEnvGetScript(name, "User");
+}
+
+function windowsUserEnvSetScript(name, value) {
+  return windowsEnvSetScript(name, value, "User");
+}
+
+async function getWindowsUserEnv(name) {
+  if (!IS_WIN) return "";
+  try {
+    return (await execPowerShell(windowsUserEnvGetScript(name))).trim();
+  } catch {
+    return "";
+  }
+}
+
+async function getWindowsMachineEnv(name) {
+  if (!IS_WIN) return "";
+  try {
+    return (await execPowerShell(windowsEnvGetScript(name, "Machine"))).trim();
+  } catch {
+    return "";
+  }
+}
+
+async function setWindowsUserEnv(name, value) {
+  await execPowerShell(windowsUserEnvSetScript(name, value));
+  process.env[name] = value;
+}
+
+async function setWindowsMachineEnv(name, value) {
+  await execPowerShell(windowsEnvSetScript(name, value, "Machine"), { elevated: !(await isWindowsElevated()) });
+  process.env[name] = value;
+}
+
+async function setWindowsNodeExtraCaCertsEnv(value) {
+  const errors = [];
+  try {
+    await setWindowsUserEnv(NODE_EXTRA_CA_CERTS, value);
+  } catch (error) {
+    errors.push(`User=${error.message}`);
+  }
+  try {
+    await setWindowsMachineEnv(NODE_EXTRA_CA_CERTS, value);
+  } catch (error) {
+    errors.push(`Machine=${error.message}`);
+  }
+  if (errors.length >= 2) {
+    throw new Error(`Failed to set ${NODE_EXTRA_CA_CERTS}: ${errors.join("; ")}`);
+  }
+  process.env[NODE_EXTRA_CA_CERTS] = value;
+}
+
+async function getNodeExtraCaCertsEnv() {
+  if (IS_MAC) return getLaunchctlEnv(NODE_EXTRA_CA_CERTS);
+  if (IS_WIN) return (await getWindowsUserEnv(NODE_EXTRA_CA_CERTS)) || (await getWindowsMachineEnv(NODE_EXTRA_CA_CERTS));
+  return "";
+}
+
 async function checkAntigravityNodeTrust(certPath) {
-  if (!IS_MAC) {
+  if (!IS_MAC && !IS_WIN) {
     return { supported: false, applied: false, value: "" };
   }
 
-  const value = await getLaunchctlEnv("NODE_EXTRA_CA_CERTS");
+  const values = IS_WIN
+    ? [await getWindowsUserEnv(NODE_EXTRA_CA_CERTS), await getWindowsMachineEnv(NODE_EXTRA_CA_CERTS)]
+    : [await getNodeExtraCaCertsEnv()];
   const fingerprint = getCertFingerprint(certPath).replace(/:/g, "").toUpperCase();
-  const applied = Boolean(value && getPemFingerprints(value).includes(fingerprint));
+  const appliedValue = values.find((value) => value && getPemFingerprints(value).includes(fingerprint)) || "";
+  const value = appliedValue || values.find(Boolean) || "";
+  const applied = Boolean(appliedValue);
   return { supported: true, applied, value };
 }
 
 async function applyAntigravityNodeTrust(certPath) {
-  if (!IS_MAC) {
+  if (!IS_MAC && !IS_WIN) {
     return { supported: false, applied: false, restartRequired: false };
   }
 
   const antigravityRunning = await isAntigravityRunning();
-  const currentValue = await getLaunchctlEnv("NODE_EXTRA_CA_CERTS");
+  const currentValue = await getNodeExtraCaCertsEnv();
   const status = await checkAntigravityNodeTrust(certPath);
   let nextValue = currentValue || certPath;
 
@@ -145,9 +218,11 @@ async function applyAntigravityNodeTrust(certPath) {
     nextValue = bundlePath;
   }
 
-  await execPromise(`launchctl setenv NODE_EXTRA_CA_CERTS ${shellQuote(nextValue)}`);
+  if (IS_MAC) await execPromise(`launchctl setenv ${NODE_EXTRA_CA_CERTS} ${shellQuote(nextValue)}`);
+  else await setWindowsNodeExtraCaCertsEnv(nextValue);
+
   const nextStatus = await checkAntigravityNodeTrust(certPath);
-  if (!nextStatus.applied) throw new Error("Failed to apply NODE_EXTRA_CA_CERTS via launchctl");
+  if (!nextStatus.applied) throw new Error(`Failed to apply ${NODE_EXTRA_CA_CERTS}`);
 
   return {
     supported: true,
@@ -160,6 +235,19 @@ async function applyAntigravityNodeTrust(certPath) {
 }
 
 async function isAntigravityRunning() {
+  if (IS_WIN) {
+    try {
+      const output = await execPowerShell([
+        `Get-CimInstance Win32_Process`,
+        `  | Where-Object { $_.Name -like '*Antigravity*' -or $_.ExecutablePath -like '*\\Antigravity\\*' }`,
+        `  | Select-Object -First 1 -ExpandProperty ProcessId`,
+      ].join(" "));
+      return output.trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
   if (!IS_MAC) return false;
   try {
     const output = await execPromise("pgrep -f 'Antigravity.app/Contents/MacOS/Electron' 2>/dev/null || true");
@@ -358,7 +446,7 @@ async function windowsBatchInstallCertAndHosts({ certPath, hostsContent, hostsFi
       `Remove-Item -Path '${tempHosts.replace(/'/g, "''")}' -Force -ErrorAction SilentlyContinue`,
     );
   }
-  await execPowerShell(ps.join("; "), { elevated: true });
+  await execPowerShell(ps.join("; "), { elevated: !(await isWindowsElevated()) });
   if (tempHosts) { try { require("fs").unlinkSync(tempHosts); } catch { /* best effort */ } }
 }
 
@@ -367,7 +455,7 @@ async function installCert(certPath, targetHost, sudoPassword) {
   if (isInstalled) return { installed: false };
 
   if (IS_WIN) {
-    await execPowerShell(`certutil -addstore Root '${certPath.replace(/'/g, "''")}'`, { elevated: true });
+    await execPowerShell(`certutil -addstore Root '${certPath.replace(/'/g, "''")}'`, { elevated: !(await isWindowsElevated()) });
     return { installed: true };
   }
 
@@ -397,7 +485,7 @@ async function uninstallCert(certPath, targetHost, sudoPassword) {
 
   if (IS_WIN) {
     const fingerprint = getCertFingerprint(certPath).replace(/:/g, "").toUpperCase();
-    await execPowerShell(`certutil -delstore Root '${fingerprint}'`, { elevated: true });
+    await execPowerShell(`certutil -delstore Root '${fingerprint}'`, { elevated: !(await isWindowsElevated()) });
     return { removed: true };
   }
 
@@ -440,4 +528,8 @@ module.exports = {
   macSystemTrustCommand,
   uninstallCert,
   windowsBatchInstallCertAndHosts,
+  windowsEnvGetScript,
+  windowsEnvSetScript,
+  windowsUserEnvGetScript,
+  windowsUserEnvSetScript,
 };
