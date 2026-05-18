@@ -772,16 +772,24 @@ async function runProxy(options) {
         thinkingCfg.includeThoughts = true;
       }
 
-      // Thêm Anthropic-format thinking block chỉ khi model target là Claude.
-      // GPT / Gemini chỉ cần reasoning_effort — thêm thinking block cho GPT sẽ gây 400.
+      // Thêm Anthropic-format thinking block chỉ khi model target là Claude VÀ không phải Kiro provider.
+      // Kiro/AWS CodeWhisperer API không chấp nhận `thinking` hoặc `reasoning_effort` ở top-level
+      // → sẽ trả về HTTP 400 "Improperly formed request" nếu inject vào.
+      // 9router tự quản lý thinking cho Kiro thông qua model name (-thinking-agentic suffix).
       const targetIsClaudeModel = String(body.model || originalModel || "").toLowerCase().includes("claude");
-      if (!body.thinking && body.reasoning_effort && targetIsClaudeModel) {
+      const targetIsKiroProvider = String(body.model || originalModel || "").startsWith("kr/");
+      if (!body.thinking && body.reasoning_effort && targetIsClaudeModel && !targetIsKiroProvider) {
         const budgetByEffort = { low: 4000, medium: 8000, high: 16000, xhigh: 24000 };
         const explicitBudget = thinkingCfg && Number(thinkingCfg.thinkingBudget || 0);
         body.thinking = {
           type: "enabled",
           budget_tokens: explicitBudget || budgetByEffort[body.reasoning_effort] || 8000,
         };
+      }
+      // Strip reasoning_effort cho Kiro — 9router/Kiro không nhận field này.
+      if (targetIsKiroProvider) {
+        delete body.reasoning_effort;
+        delete body.thinking;
       }
       // ────────────────────────────────────────────────────────────────────────
 
