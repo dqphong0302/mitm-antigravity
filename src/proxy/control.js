@@ -154,6 +154,31 @@ async function waitForProxyHealth(port, targetHost = DEFAULT_TARGET, attempts = 
   return false;
 }
 
+function portConflictHint(port) {
+  const p = Number(port);
+  if (IS_WIN) {
+    return [
+      `Run as Administrator and execute:`,
+      `  PowerShell:  Get-NetTCPConnection -LocalPort ${p} -State Listen | Stop-Process -Id { $_.OwningProcess } -Force`,
+      `  cmd:         for /f "tokens=5" %a in ('netstat -ano ^| findstr ":${p} " ^| findstr LISTENING') do taskkill /PID %a /F`,
+      `Hoặc dùng script kèm: scripts\\kill-windows-proxy.cmd`,
+    ].join("\n");
+  }
+  if (IS_MAC) {
+    return [
+      `Common owners of port ${p} on macOS: another MITM AG instance, an old Python proxy, Skype, Apache, nginx.`,
+      `Stop it with:`,
+      `  sudo lsof -nP -iTCP:${p} -sTCP:LISTEN -t | xargs sudo kill -TERM`,
+      `Hoặc double-click scripts/kill-mitm-ag.command`,
+    ].join("\n");
+  }
+  return [
+    `Stop the listener with:`,
+    `  sudo lsof -nP -iTCP:${p} -sTCP:LISTEN -t | xargs -r sudo kill -TERM`,
+    `Hoặc dùng scripts/kill-mitm-ag.sh`,
+  ].join("\n");
+}
+
 async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TARGET }) {
   if (await checkProxyHealth(port, targetHost)) {
     return { started: false, alreadyRunning: true, port };
@@ -162,7 +187,14 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
   if (await isPortListening(port)) {
     const owners = await getPortOwners(port);
     const ownerText = formatPortOwners(owners) || "unknown process";
-    throw new Error(`Port ${port} is already in use by ${ownerText}`);
+    const hint = portConflictHint(port);
+    const error = new Error(
+      `Port ${port} is already in use by ${ownerText}.\n${hint}`
+    );
+    error.code = "EADDRINUSE";
+    error.port = Number(port);
+    error.owners = owners;
+    throw error;
   }
 
   const logPath = proxyLogPath();
@@ -220,7 +252,20 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
   }
 
   if (!(await waitForProxyHealth(port, targetHost))) {
-    throw new Error(`Proxy did not start on port ${port}. Check ${logPath}`);
+    // Cố gắng phân loại nguyên nhân để user biết hành động tiếp theo.
+    const hints = [];
+    if (IS_WIN && !(await isWindowsElevated())) {
+      hints.push("UAC prompt may have been cancelled. Re-run and approve the elevation dialog.");
+    }
+    if (await isPortListening(port)) {
+      const owners = await getPortOwners(port);
+      const ownerText = formatPortOwners(owners) || "unknown process";
+      hints.push(`Port ${port} is listening but health check fails – owner: ${ownerText}. Likely an older proxy version; stop it first.`);
+    } else {
+      hints.push(`Nothing is listening on port ${port}. The backend likely crashed during startup.`);
+    }
+    hints.push(`Check log: ${logPath}`);
+    throw new Error(`Proxy did not start on port ${port}.\n${hints.join("\n")}`);
   }
 
   return { started: true, alreadyRunning: false, port, logPath };
@@ -290,12 +335,39 @@ function windowsStopProxyScript(port) {
   ].join("; ");
 }
 
-async function killPidsUnix(pids, sudoPassword) {
-  const command = `kill ${pids.map((pid) => shellQuote(pid)).join(" ")}`;
+function pidStillAlive(pid) {
   try {
-    await execPromise(command);
-  } catch (error) {
-    await execWithSudo(command, sudoPassword);
+    // signal 0 chỉ check tồn tại + quyền – không gửi thực sự.
+    process.kill(Number(pid), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function killPidsUnix(pids, sudoPassword) {
+  const pidArgs = pids.map((pid) => shellQuote(pid)).join(" ");
+  const termCommand = `kill -TERM ${pidArgs}`;
+  const killCommand = `kill -KILL ${pidArgs}`;
+  // SIGTERM trước để cho proxy đóng graceful (close server, flush log).
+  try {
+    await execPromise(termCommand);
+  } catch (_) {
+    try {
+      await execWithSudo(termCommand, sudoPassword);
+    } catch (_) {
+      // Có thể PID đã chết – không fail, để vòng wait kiểm tra port.
+    }
+  }
+  // Cho ~1s để proxy thoát; nếu vẫn còn → SIGKILL.
+  for (let i = 0; i < 5; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (!pids.some((pid) => pidStillAlive(pid))) return;
+  }
+  try {
+    await execPromise(killCommand);
+  } catch (_) {
+    try { await execWithSudo(killCommand, sudoPassword); } catch (_) { /* ignore */ }
   }
 }
 
@@ -355,6 +427,7 @@ module.exports = {
   macProxyLaunchDaemonPlist,
   formatPortOwners,
   getPortOwners,
+  portConflictHint,
   isAutoStartEnabled,
   isPortListening,
   isManagedProxyHealthPayload,

@@ -289,6 +289,194 @@ function shouldUseReasoningEffort(thinkingCfg, isThinkingModel) {
   return Boolean(thinkingCfg || isThinkingModel);
 }
 
+// Kiro / AWS CodeWhisperer provider detection.
+// 9router exposes Kiro-routed models under multiple prefixes depending on user config:
+//   - `kr/...`         (short alias)
+//   - `kiro/...`       (full provider name)
+// Match both case-insensitively. Bypassing this check causes the proxy to inject
+// `thinking` / `reasoning_effort` / `tools` into the upstream body, which Kiro rejects
+// with HTTP 400 "Improperly formed request".
+function isKiroProviderModel(modelName) {
+  return /^(kr|kiro)\//i.test(String(modelName || ""));
+}
+
+// Top-level fields Kiro accepts. Anything else (reasoning_effort, thinking,
+// generationConfig, tools, safetySettings, etc.) must be stripped.
+const KIRO_ALLOWED_TOP_LEVEL = new Set([
+  "model", "request", "contents", "messages",
+  "userAgent", "stream", "system", "systemInstruction",
+]);
+
+// JSON Schema type coercion for tool parameters.
+//
+// Some MCP servers emit schemas where keyword values are stringified — e.g.
+//   { "type": "integer", "default": "10", "minimum": "0" }
+// Antigravity forwards these tools verbatim. OpenAI Codex (gpt-5.5) validates
+// tool schemas in strict mode and rejects the call with:
+//   "Invalid schema for function '...': '10' is not of type 'integer'"
+//
+// We walk the schema tree and coerce values whose JSON type does not match the
+// declared `type`. This only touches schema metadata (default, enum, const,
+// minimum, maximum, multipleOf, examples) — never user request payloads.
+const SCHEMA_NUMERIC_KEYWORDS = new Set([
+  "default", "const", "minimum", "maximum",
+  "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+]);
+const SCHEMA_NUMERIC_LIST_KEYWORDS = new Set(["enum", "examples"]);
+const SCHEMA_STRUCTURAL_KEYWORDS = new Set([
+  "properties", "patternProperties", "definitions", "$defs",
+]);
+const SCHEMA_NESTED_LIST_KEYWORDS = new Set([
+  "allOf", "anyOf", "oneOf", "prefixItems",
+]);
+const SCHEMA_NESTED_KEYWORDS = new Set([
+  "items", "additionalProperties", "not", "if", "then", "else", "contains",
+  "propertyNames", "unevaluatedItems", "unevaluatedProperties",
+]);
+
+function normalizeSchemaTypeName(value) {
+  // Gemini format uses uppercase ("INTEGER", "NUMBER"); JSON Schema uses lowercase.
+  return String(value || "").trim().toLowerCase();
+}
+
+function coerceScalarToSchemaType(value, type) {
+  if (value === null || value === undefined) return value;
+  const normalizedType = normalizeSchemaTypeName(type);
+
+  if (normalizedType === "integer") {
+    if (typeof value === "number" && Number.isInteger(value)) return value;
+    if (typeof value === "string" && /^-?\d+$/.test(value.trim())) {
+      const parsed = Number(value.trim());
+      if (Number.isInteger(parsed)) return parsed;
+    }
+    if (typeof value === "boolean") return value ? 1 : 0;
+    return value;
+  }
+
+  if (normalizedType === "number") {
+    if (typeof value === "number") return value;
+    if (typeof value === "string" && /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value.trim())) {
+      const parsed = Number(value.trim());
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    if (typeof value === "boolean") return value ? 1 : 0;
+    return value;
+  }
+
+  if (normalizedType === "boolean") {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const lowered = value.trim().toLowerCase();
+      if (lowered === "true") return true;
+      if (lowered === "false") return false;
+    }
+    return value;
+  }
+
+  if (normalizedType === "string") {
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    return value;
+  }
+
+  return value;
+}
+
+function coerceJsonSchemaTypes(node, depth = 0) {
+  if (!node || depth > 32) return node;
+  if (Array.isArray(node)) {
+    for (const item of node) coerceJsonSchemaTypes(item, depth + 1);
+    return node;
+  }
+  if (typeof node !== "object") return node;
+
+  const declaredType = Array.isArray(node.type)
+    ? node.type.find((t) => typeof t === "string")
+    : node.type;
+
+  if (declaredType) {
+    for (const key of SCHEMA_NUMERIC_KEYWORDS) {
+      if (key in node) node[key] = coerceScalarToSchemaType(node[key], declaredType);
+    }
+    for (const key of SCHEMA_NUMERIC_LIST_KEYWORDS) {
+      if (Array.isArray(node[key])) {
+        node[key] = node[key].map((item) => coerceScalarToSchemaType(item, declaredType));
+      }
+    }
+  }
+
+  for (const key of SCHEMA_STRUCTURAL_KEYWORDS) {
+    const child = node[key];
+    if (child && typeof child === "object" && !Array.isArray(child)) {
+      for (const propValue of Object.values(child)) coerceJsonSchemaTypes(propValue, depth + 1);
+    }
+  }
+  for (const key of SCHEMA_NESTED_LIST_KEYWORDS) {
+    if (Array.isArray(node[key])) {
+      for (const item of node[key]) coerceJsonSchemaTypes(item, depth + 1);
+    }
+  }
+  for (const key of SCHEMA_NESTED_KEYWORDS) {
+    const child = node[key];
+    if (child && typeof child === "object") coerceJsonSchemaTypes(child, depth + 1);
+  }
+
+  return node;
+}
+
+// Walk a request body and apply schema coercion to every tool definition.
+// Supports both Gemini format (request.tools[].functionDeclarations[].parameters)
+// and OpenAI format (tools[].function.parameters).
+function coerceToolSchemasInBody(body) {
+  if (!body || typeof body !== "object") return body;
+  const requestBody = body.request && typeof body.request === "object" ? body.request : body;
+
+  const toolBuckets = [requestBody.tools, body.tools].filter(Array.isArray);
+  for (const bucket of toolBuckets) {
+    for (const tool of bucket) {
+      if (!tool || typeof tool !== "object") continue;
+      // Gemini: { functionDeclarations: [{ name, parameters }] }
+      if (Array.isArray(tool.functionDeclarations)) {
+        for (const decl of tool.functionDeclarations) {
+          if (decl && decl.parameters) coerceJsonSchemaTypes(decl.parameters);
+        }
+      }
+      // OpenAI: { type: "function", function: { name, parameters } }
+      if (tool.function && tool.function.parameters) {
+        coerceJsonSchemaTypes(tool.function.parameters);
+      }
+      // Some adapters put parameters directly on the tool object.
+      if (tool.parameters) coerceJsonSchemaTypes(tool.parameters);
+    }
+  }
+  return body;
+}
+
+function sanitizeKiroRequestBody(body) {
+  if (!body || typeof body !== "object") return body;
+  delete body.reasoning_effort;
+  delete body.thinking;
+
+  const requestBody = body.request && typeof body.request === "object" ? body.request : body;
+
+  if (requestBody.generationConfig) delete requestBody.generationConfig;
+  if (body !== requestBody && body.generationConfig) delete body.generationConfig;
+  for (const key of ["tools", "toolConfig", "tool_config", "safetySettings"]) {
+    delete requestBody[key];
+    if (body !== requestBody) delete body[key];
+  }
+
+  for (const key of Object.keys(body)) {
+    if (!KIRO_ALLOWED_TOP_LEVEL.has(key)) delete body[key];
+  }
+
+  // 9router reads model from top-level body.model. A stale Gemini alias inside
+  // request.model confuses the Kiro adapter — drop it.
+  if (requestBody !== body) delete requestBody.model;
+
+  return body;
+}
+
 function thoughtPart(text) {
   if (!text || isInternalInstructionLeak(text)) return null;
   return { thought: true, text };
@@ -721,7 +909,22 @@ async function runProxy(options) {
       }
       const requestBody = body.request && typeof body.request === "object" ? body.request : body;
       const originalModel = requestedModel || body.model || requestBody.model;
-      if (mappedEntry && mappedEntry.model) body.model = mappedEntry.model;
+      if (mappedEntry && mappedEntry.model) {
+        body.model = mappedEntry.model;
+      } else {
+        // Fallback for unmapped native Antigravity models (like claude-opus-4.7)
+        // Ensure they route to valid Kiro upstream models rather than failing with 400.
+        const modelLower = String(originalModel || "").toLowerCase();
+        if (modelLower.includes("claude-opus-4.7") || modelLower.includes("claude-opus-4.6") || modelLower.includes("claude-opus-4-6-thinking")) {
+          body.model = "kr/claude-sonnet-4.6-thinking-agentic";
+        } else if (modelLower.includes("claude-sonnet-4.6") || modelLower.includes("claude-sonnet-4-6")) {
+          body.model = "kr/claude-sonnet-4.6-agentic";
+        } else if (modelLower.includes("claude-sonnet-4.5")) {
+          body.model = "kr/claude-sonnet-4.5-agentic";
+        } else if (modelLower.includes("claude-opus-4.5")) {
+          body.model = "kr/claude-sonnet-4.5-thinking-agentic";
+        }
+      }
       if (body.request && requestBody.contents && !body.userAgent) body.userAgent = "antigravity";
 
       // ─── Thinking / Reasoning passthrough ───────────────────────────────────
@@ -776,8 +979,9 @@ async function runProxy(options) {
       // Kiro/AWS CodeWhisperer API không chấp nhận `thinking` hoặc `reasoning_effort` ở top-level
       // → sẽ trả về HTTP 400 "Improperly formed request" nếu inject vào.
       // 9router tự quản lý thinking cho Kiro thông qua model name (-thinking-agentic suffix).
-      const targetIsClaudeModel = String(body.model || originalModel || "").toLowerCase().includes("claude");
-      const targetIsKiroProvider = String(body.model || originalModel || "").startsWith("kr/");
+      const targetModelLower = String(body.model || originalModel || "").toLowerCase();
+      const targetIsClaudeModel = targetModelLower.includes("claude");
+      const targetIsKiroProvider = isKiroProviderModel(body.model || originalModel);
       if (!body.thinking && body.reasoning_effort && targetIsClaudeModel && !targetIsKiroProvider) {
         const budgetByEffort = { low: 4000, medium: 8000, high: 16000, xhigh: 24000 };
         const explicitBudget = thinkingCfg && Number(thinkingCfg.thinkingBudget || 0);
@@ -786,10 +990,22 @@ async function runProxy(options) {
           budget_tokens: explicitBudget || budgetByEffort[body.reasoning_effort] || 8000,
         };
       }
-      // Strip reasoning_effort cho Kiro — 9router/Kiro không nhận field này.
+      // ── Kiro (AWS CodeWhisperer) deep sanitization ──────────────────────────
+      // Kiro API strict schema: chỉ nhận messages/contents + model field.
+      // Bất kỳ field lạ nào ở top-level hoặc trong generationConfig đều gây 400.
       if (targetIsKiroProvider) {
-        delete body.reasoning_effort;
-        delete body.thinking;
+        sanitizeKiroRequestBody(body);
+      }
+      // ────────────────────────────────────────────────────────────────────────
+
+      // ── MCP tool schema coercion ────────────────────────────────────────────
+      // Some MCP servers emit JSON schemas with stringified numerics
+      // (default: "10" instead of 10). OpenAI Codex strict mode rejects these
+      // with: "Invalid schema for function '...': '10' is not of type 'integer'".
+      // Coerce on every request — cheap walk, idempotent, no-op for valid schemas.
+      // Skip for Kiro (already stripped tools above).
+      if (!targetIsKiroProvider) {
+        coerceToolSchemasInBody(body);
       }
       // ────────────────────────────────────────────────────────────────────────
 
@@ -933,10 +1149,24 @@ async function runProxy(options) {
     return intercept(req, res, bodyBuffer, effectiveEntry, model || modelAlias);
   });
 
-  server.listen(options.port, () => {
-    logProxyReady({ port: options.port, routerUrl: options.routerUrl });
+  // Listen + return a handle so the caller (CLI or GUI) can control lifecycle
+  // without relying on process.exit. CLI binds signal handlers itself.
+  await new Promise((resolve, reject) => {
+    const onError = (error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      logProxyReady({ port: options.port, routerUrl: options.routerUrl });
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(options.port);
   });
 
+  // Background error handler after listen (port stolen, fd issues, etc.).
   server.on("error", (error) => {
     if (error.code === "EADDRINUSE") {
       logProxyError({ message: `port ${options.port} already in use` });
@@ -945,11 +1175,16 @@ async function runProxy(options) {
     } else {
       logProxyError({ message: error.message });
     }
-    process.exit(1);
   });
 
-  process.on("SIGTERM", () => { server.close(() => process.exit(0)); });
-  process.on("SIGINT", () => { server.close(() => process.exit(0)); });
+  return {
+    server,
+    port: options.port,
+    routerUrl: options.routerUrl,
+    close() {
+      return new Promise((resolve) => server.close(() => resolve()));
+    },
+  };
 }
 
 // Re-export proxy-helpers for backward compatibility.
@@ -963,6 +1198,10 @@ module.exports = {
   chatCompletionsRouterUrl,
   isGptResponsesModel,
   isInternalInstructionLeak,
+  isKiroProviderModel,
+  coerceJsonSchemaTypes,
+  coerceToolSchemasInBody,
+  sanitizeKiroRequestBody,
   stripInternalInstructionLeaks,
   sanitizeInternalInstructionJsonText,
   createInternalInstructionSseSanitizer,

@@ -27,11 +27,25 @@ function openBrowser(url) {
   child.unref();
 }
 
-function execPromise(command, { timeout = 30_000 } = {}) {
+// Mặc định maxBuffer của exec là 1MB → quá nhỏ cho lsof/netstat/ps trên máy
+// nhiều connection (đặc biệt Windows với hàng nghìn TCP entries). Bump lên 16MB
+// để tránh "stdout maxBuffer exceeded" gây fail random khi detect port.
+const EXEC_DEFAULT_MAX_BUFFER = 16 * 1024 * 1024;
+
+function execPromise(command, { timeout = 30_000, maxBuffer = EXEC_DEFAULT_MAX_BUFFER } = {}) {
   return new Promise((resolve, reject) => {
-    exec(command, { timeout, env: safeChildProcessEnv() }, (error, stdout, stderr) => {
-      if (error) reject(new Error(stderr || error.message));
-      else resolve(stdout);
+    exec(command, { timeout, maxBuffer, env: safeChildProcessEnv() }, (error, stdout, stderr) => {
+      if (error) {
+        // exec sẽ set error.killed=true khi timeout. Cho user thông báo rõ ràng
+        // thay vì lỗi mơ hồ "Command failed".
+        if (error.killed && error.signal) {
+          reject(new Error(`Command timed out after ${timeout}ms (signal ${error.signal}): ${command.slice(0, 120)}`));
+          return;
+        }
+        reject(new Error(stderr || error.message));
+        return;
+      }
+      resolve(stdout);
     });
   });
 }
@@ -141,15 +155,27 @@ function execWithSudo(command, password) {
   return execPromise(`sudo sh -c ${shellQuote(command)}`);
 }
 
-function execPowerShell(script, { elevated = false } = {}) {
-  // ── Non-elevated: stdout piped trực tiếp, timeout 30s ───────────────────
+function execPowerShell(script, { elevated = false, timeout } = {}) {
+  // ── Non-elevated: stdout piped trực tiếp ────────────────────────────────
   if (!elevated) {
     const encoded = Buffer.from(script, "utf16le").toString("base64");
     const command = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+    const nonElevatedTimeout = Number.isFinite(Number(timeout)) ? Number(timeout) : 30_000;
     return new Promise((resolve, reject) => {
-      exec(command, { timeout: 30_000, env: safeChildProcessEnv() }, (error, stdout, stderr) => {
-        if (error) reject(new Error(stderr || error.message));
-        else resolve(stdout);
+      exec(command, {
+        timeout: nonElevatedTimeout,
+        maxBuffer: EXEC_DEFAULT_MAX_BUFFER,
+        env: safeChildProcessEnv(),
+      }, (error, stdout, stderr) => {
+        if (error) {
+          if (error.killed && error.signal) {
+            reject(new Error(`PowerShell timed out after ${nonElevatedTimeout}ms`));
+            return;
+          }
+          reject(new Error(stderr || error.message));
+          return;
+        }
+        resolve(stdout);
       });
     });
   }
@@ -208,8 +234,13 @@ function execPowerShell(script, { elevated = false } = {}) {
   const launcherEncoded = Buffer.from(launcher, "utf16le").toString("base64");
   const elevatedCmd = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${launcherEncoded}`;
 
+  const elevatedTimeout = Number.isFinite(Number(timeout)) ? Number(timeout) : 120_000;
   return new Promise((resolve, reject) => {
-    exec(elevatedCmd, { timeout: 120_000, env: safeChildProcessEnv() }, (error, stdout, stderr) => {
+    exec(elevatedCmd, {
+      timeout: elevatedTimeout,
+      maxBuffer: EXEC_DEFAULT_MAX_BUFFER,
+      env: safeChildProcessEnv(),
+    }, (error, stdout, stderr) => {
       let captured = "";
       try {
         if (fs.existsSync(outFile)) {

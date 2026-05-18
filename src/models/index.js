@@ -29,6 +29,11 @@ const BUILTIN_MODEL_VALUE_ALIASES = new Map([
   ["342", "gpt-oss-120b-medium"],
   ["MODEL_PLACEHOLDER_M19", "tab_flash_lite_preview"],
   ["MODEL_PLACEHOLDER_M28", "tab_jump_flash_lite_preview"],
+  ["gemini-3.1-pro", "gemini-3.1-pro-high"],
+  ["gemini-3.1-pro-preview", "gemini-3.1-pro-high"],
+  ["gh/gemini-3.1-pro-preview", "gemini-3.1-pro-high"],
+  ["gemini-pro-agent", "gemini-3.1-pro-high"],
+  ["gemini-3-flash-agent", "gemini-3-flash"],
 ]);
 
 const MODEL_FIELD_NAMES = new Set([
@@ -306,9 +311,11 @@ function extractModelFromUrl(url) {
 function builtInAliasForModel(model) {
   const value = String(model || "").trim();
   const alias = modelAliasFromName(value);
+  const builtin = BUILTIN_MODEL_VALUE_ALIASES.get(value) || BUILTIN_MODEL_VALUE_ALIASES.get(alias);
+  if (builtin) return builtin;
   if (MAPPABLE_ALIAS_SET.has(value)) return value;
   if (MAPPABLE_ALIAS_SET.has(alias)) return alias;
-  return BUILTIN_MODEL_VALUE_ALIASES.get(value) || BUILTIN_MODEL_VALUE_ALIASES.get(alias) || "";
+  return "";
 }
 
 function getMappedEntry(model, options) {

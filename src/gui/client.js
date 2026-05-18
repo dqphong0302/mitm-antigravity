@@ -227,7 +227,16 @@ function guiClientScript() {
 
     function renderStatus(status) {
       state.status = status;
-      setMetric("s-proxy", status.proxyListening ? t("status.running") : t("status.stopped"), status.proxyListening ? "ok" : "err");
+      // Append the manager mode (embedded/detached/idle) to the proxy metric
+      // so users immediately see HOW the proxy is running, not just whether
+      // a listener is up. Embedded means the GUI process owns it (fast reload,
+      // no UAC); detached means a separate process; idle means stopped.
+      const mode = status.proxyMode && status.proxyMode !== "idle" ? " · " + status.proxyMode : "";
+      setMetric(
+        "s-proxy",
+        (status.proxyListening ? t("status.running") : t("status.stopped")) + mode,
+        status.proxyListening ? "ok" : "err"
+      );
       setMetric("s-dns", status.dnsConfigured ? t("status.active") : t("status.notSet"), status.dnsConfigured ? "ok" : "err");
       setMetric("s-cert", status.certExists ? t("status.generated") : t("status.missing"), status.certExists ? "ok" : "err");
       setMetric("s-trust", status.certInstalled ? t("status.trusted") : t("status.notTrusted"), status.certInstalled ? "ok" : "warn");
@@ -273,6 +282,41 @@ function guiClientScript() {
           statusRequest = null;
         });
       return statusRequest;
+    }
+
+    // Server-Sent Events: backend emits proxy lifecycle changes (start/stop/
+    // reload/error) and a heartbeat. We use it to keep the dashboard live
+    // without aggressive polling. EventSource auto-reconnects on network blips.
+    let proxyEvents = null;
+    let proxyEventsRetryAt = 0;
+    function subscribeProxyEvents() {
+      if (typeof EventSource === "undefined") return;
+      try {
+        if (proxyEvents) proxyEvents.close();
+        proxyEvents = new EventSource("/api/events");
+      } catch {
+        return;
+      }
+      proxyEvents.addEventListener("status", () => {
+        // The status payload omits some derived fields (cert, dns) so always
+        // re-fetch /api/status. Force-bypass the 1.2s debounce.
+        loadStatus({ force: true });
+      });
+      proxyEvents.addEventListener("error", () => {
+        loadStatus({ force: true });
+      });
+      // Browser EventSource auto-reconnects on transient drops, but if the
+      // backend itself restarts (e.g. after an upgrade) the readyState can
+      // stick at CLOSED. Fall back to a manual retry guarded by a 3s cooldown
+      // so we don't busy-loop while the backend is genuinely down.
+      proxyEvents.onerror = () => {
+        if (proxyEvents && proxyEvents.readyState === EventSource.CLOSED) {
+          const now = Date.now();
+          if (now - proxyEventsRetryAt < 3000) return;
+          proxyEventsRetryAt = now;
+          setTimeout(subscribeProxyEvents, 1500);
+        }
+      };
     }
 
     function setSystemButtons(disabled) {
@@ -727,6 +771,7 @@ function guiClientScript() {
       $("uninstallCertBtn").addEventListener("click", uninstallCertUi);
       $("enableAutoStartBtn").addEventListener("click", enableAutoStartUi);
       $("disableAutoStartBtn").addEventListener("click", disableAutoStartUi);
+      subscribeProxyEvents();
       $("eyeBtn").addEventListener("click", () => {
         const input = $("apiKey");
         input.type = input.type === "password" ? "text" : "password";

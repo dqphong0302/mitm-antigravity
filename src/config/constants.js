@@ -28,6 +28,7 @@ const ANTIGRAVITY_ALIASES = [
   "gemini-3-flash-a",
   "gemini-3-flash-b",
   "gemini-3-flash-c",
+  "gemini-pro-agent",
   "claude-sonnet-4-6",
   "claude-opus-4-6-thinking",
   "gpt-oss-120b-medium",

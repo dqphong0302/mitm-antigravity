@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
+          cache: pnpm
 
       - name: Install Rust (stable + x86_64 target for cross-build)
         uses: dtolnay/rust-toolchain@stable
@@ -34,11 +34,11 @@ jobs:
           path: ~/.pkg-cache
           key: pkg-macos-node20-${{ runner.arch }}-v1
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       # Build cả hai macOS binaries trước – prepare-tauri.js sẽ copy đúng cái vào resources
       - name: Build pkg – macOS (arm64 + x64)
-        run: npm run build:pkg:macos:all
+        run: pnpm run build:pkg:macos:all
         env:
           PKG_CACHE_PATH: ~/.pkg-cache
 
@@ -51,7 +51,7 @@ jobs:
 
       # ── Tauri .app / .dmg – arm64 ─────────────────────────────────────────
       - name: Tauri build – macOS arm64
-        run: npx tauri build --target aarch64-apple-darwin
+        run: pnpm exec tauri build --target aarch64-apple-darwin
         env:
           CARGO_BUILD_TARGET: aarch64-apple-darwin
           PKG_CACHE_PATH: ~/.pkg-cache
@@ -60,7 +60,7 @@ jobs:
 
       # ── Tauri .app / .dmg – x64 ───────────────────────────────────────────
       - name: Tauri build – macOS x64
-        run: npx tauri build --target x86_64-apple-darwin
+        run: pnpm exec tauri build --target x86_64-apple-darwin
         env:
           CARGO_BUILD_TARGET: x86_64-apple-darwin
           PKG_CACHE_PATH: ~/.pkg-cache
@@ -95,7 +95,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
+          cache: pnpm
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -106,10 +106,10 @@ jobs:
           path: ${{ runner.temp }}\pkg-cache
           key: pkg-windows-node20-x64-v1
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       - name: Build pkg – Windows x64
-        run: npm run build:pkg:windows
+        run: pnpm run build:pkg:windows
         env:
           PKG_CACHE_PATH: ${{ runner.temp }}\pkg-cache
 
@@ -120,7 +120,7 @@ jobs:
           test -f dist/mitm-antigravity-win-x64.exe || (echo "ERROR: win-x64 missing" && exit 1)
 
       - name: Tauri build – Windows x64
-        run: npx tauri build
+        run: pnpm exec tauri build
         env:
           PKG_CACHE_PATH: ${{ runner.temp }}\pkg-cache
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -147,7 +147,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
+          cache: pnpm
 
       - name: Cache pkg base binaries
         uses: actions/cache@v4
@@ -155,7 +155,7 @@ jobs:
           path: ~/.pkg-cache
           key: pkg-linux-x64-node20-v1
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       - name: Build pkg – Linux x64
         run: node scripts/build-pkg.js linux-x64
@@ -181,7 +181,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
+          cache: pnpm
 
       - name: Cache pkg base binaries
         uses: actions/cache@v4
@@ -189,7 +189,7 @@ jobs:
           path: ~/.pkg-cache
           key: pkg-linux-arm64-node20-v1
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       - name: Build pkg – Linux arm64
         run: node scripts/build-pkg.js linux-arm64

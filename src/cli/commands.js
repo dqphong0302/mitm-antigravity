@@ -425,7 +425,16 @@ async function main() {
     });
   }
 
-  await runProxy(options);
+  // CLI owns lifecycle: keep the proxy alive until SIGTERM/SIGINT.
+  const handle = await runProxy(options);
+  await new Promise((resolve) => {
+    const shutdown = async () => {
+      try { await handle.close(); } catch (_) { /* ignore */ }
+      resolve();
+    };
+    process.once("SIGTERM", shutdown);
+    process.once("SIGINT", shutdown);
+  });
 }
 
 module.exports = {

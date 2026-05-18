@@ -51,9 +51,9 @@ const {
   enableAutoStart,
   formatPortOwners,
   getPortOwners,
-  startProxyDetached,
   stopProxyByPort,
 } = require("../proxy/control");
+const { getProxyManager } = require("../proxy/manager");
 const { guiHtml } = require("./template");
 const { sendApiError, sendHtml, sendNotFound } = require("./api-utils");
 const { createGuiRoutes, findGuiRoute } = require("./routes");
@@ -101,11 +101,13 @@ async function reloadProxyAfterConfigSave(previousConfig, nextConfig, body, opti
   if (!(await checkProxyHealth(port, targetHost))) return proxy;
 
   const sudoPassword = String(body.sudoPassword || "");
-  await stopProxyByPort({ sudoPassword, port, targetHost });
-  const result = await startProxyDetached({ sudoPassword, port, targetHost });
+  // Route through ProxyManager so embedded mode reloads in-process without
+  // a full detached respawn (no UAC prompt, no port-conflict window).
+  const result = await getProxyManager().reload({ config: nextConfig, sudoPassword });
   appendLog("info", "Proxy reloaded after config save", {
     port,
     targetHost,
+    mode: result.mode,
     changed: {
       routerUrl: previousConfig.routerUrl !== nextConfig.routerUrl,
       apiKey: previousConfig.apiKey !== nextConfig.apiKey,
@@ -168,6 +170,7 @@ function createRouteHandlers(options) {
     handleEnableAutoStart,
     handleDisableAutoStart,
     handleStatus: (_req, res) => handleStatus(res, options),
+    handleEvents: (req, res) => handleEvents(req, res, options),
     handleClearLogs,
   };
 }
@@ -273,14 +276,13 @@ async function handleStartProxy(req, res, options) {
   const port = Number(cfg.port || options.port || 443);
   const targetHost = primaryTargetHost(cfg);
   appendLog("info", "Proxy start requested", { port, targetHosts: targetHosts.length });
-  // startProxyDetached handles ownership:
-  //  - health check OK (our proxy)   → alreadyRunning: true, no restart
-  //  - port busy by foreign process  → throws error with owner info
-  //  - not running                   → start LaunchDaemon (macOS) / detached (others)
-  const result = await startProxyDetached({ sudoPassword, port, targetHost });
+  // ProxyManager picks embedded vs detached automatically (privileged ports
+  // and Windows still go detached; everything else can run in-process).
+  const result = await getProxyManager().start({ config: cfg, sudoPassword });
   appendLog("info", "Proxy start from UI", {
     port,
     targetHost,
+    mode: result.mode,
     alreadyRunning: result.alreadyRunning,
   });
   invalidateStatusCache();
@@ -294,14 +296,11 @@ async function handleStartProxyOnly(req, res, options) {
   const port = Number(cfg.port || options.port || 443);
   const targetHost = primaryTargetHost(cfg);
   appendLog("info", "Proxy-only start requested", { port, targetHost });
-  // startProxyDetached handles ownership:
-  //  - health check OK (our proxy)   → alreadyRunning: true, no restart
-  //  - port busy by foreign process  → throws error with owner info
-  //  - not running                   → start LaunchDaemon (macOS) / detached (others)
-  const result = await startProxyDetached({ sudoPassword, port, targetHost });
+  const result = await getProxyManager().start({ config: cfg, sudoPassword });
   appendLog("info", "Proxy start-only from UI", {
     port,
     targetHost,
+    mode: result.mode,
     alreadyRunning: result.alreadyRunning,
   });
   invalidateStatusCache();
@@ -312,13 +311,10 @@ async function handleStopProxy(req, res, options) {
   const body = await readRequestJson(req);
   const cfg = readConfig();
   const sudoPassword = String(body.sudoPassword || "");
-  const result = await stopProxyByPort({
-    sudoPassword,
-    port: Number(cfg.port || options.port || 443),
-    targetHost: primaryTargetHost(cfg),
-  });
+  const result = await getProxyManager().stop({ config: cfg, sudoPassword });
   appendLog("info", "Proxy stop requested", {
     port: Number(cfg.port || options.port || 443),
+    mode: result.mode,
     stopped: result.stopped,
   });
   invalidateStatusCache();
@@ -354,12 +350,23 @@ async function handleStopAndCleanup(req, res, options) {
   const sudoPassword = String(body.sudoPassword || "");
   const port = Number(cfg.port || options.port || 443);
   const targetHosts = targetHostsFrom(cfg);
-  const stop = await stopProxyByPort({
+  // Stop via manager (handles embedded close + detached/LaunchDaemon teardown).
+  // For full cleanup we also clear the LaunchDaemon plist so the proxy does not
+  // auto-start after reboot — handled by stopProxyByPort with removePlist=true.
+  const stop = await getProxyManager().stop({
+    config: cfg,
     sudoPassword,
-    port,
-    targetHost: primaryTargetHost(cfg),
-    removePlist: true,   // Full cleanup: xóa LaunchDaemon plist để proxy không tự bật lại sau reboot
+    removePlist: true,
   });
+  if (!stop.stopped && await checkProxyHealth(port, primaryTargetHost(cfg))) {
+    // Embedded was idle but a stray detached process exists – sweep it.
+    await stopProxyByPort({
+      sudoPassword,
+      port,
+      targetHost: primaryTargetHost(cfg),
+      removePlist: true,
+    });
+  }
   const dns = await removeDNSEntries({ targetHosts, sudoPassword });
   appendLog("info", "Proxy stopped and DNS cleanup requested", {
     port,
@@ -384,12 +391,11 @@ async function handleReloadProxy(req, res, options) {
     return;
   }
 
-  await stopProxyByPort({ sudoPassword, port, targetHost });
   const cert = await generateCert(targetHosts, { force: false, sudoPassword });
   const certResult = await installCert(cert.ca, targetHosts[0], sudoPassword);
   const nodeTrust = await applyAntigravityNodeTrust(cert.ca);
-  const result = await startProxyDetached({ sudoPassword, port, targetHost });
-  appendLog("info", "Proxy reloaded from UI", { port, targetHost });
+  const result = await getProxyManager().reload({ config: cfg, sudoPassword });
+  appendLog("info", "Proxy reloaded from UI", { port, targetHost, mode: result.mode });
   invalidateStatusCache();
   sendJson(res, 200, { ...result, reloaded: true, wasRunning: true, cert: certResult, nodeTrust });
 }
@@ -424,13 +430,12 @@ async function handleApplyDns(req, res, options) {
   }
   let proxy = { reloaded: false, wasRunning: false, port };
   if (await checkProxyHealth(port, targetHost)) {
-    await stopProxyByPort({ sudoPassword, port, targetHost });
     proxy = {
-      ...(await startProxyDetached({ sudoPassword, port, targetHost })),
+      ...(await getProxyManager().reload({ config: cfg, sudoPassword })),
       reloaded: true,
       wasRunning: true,
     };
-    appendLog("info", "Proxy reloaded after DNS and certificate apply", { port, targetHost });
+    appendLog("info", "Proxy reloaded after DNS and certificate apply", { port, targetHost, mode: proxy.mode });
   }
   invalidateStatusCache();
   sendJson(res, 200, { cert: certResult, dns: dnsResult, nodeTrust, proxy });
@@ -490,6 +495,8 @@ async function collectGuiStatus(options, { deep = false, useCache = true } = {})
     port,
     portOwners,
     portOwnerText: formatPortOwners(portOwners),
+    proxyMode: getProxyManager().describe().mode,
+    proxyLastError: getProxyManager().describe().lastError,
   };
   statusCache = { at: now, key, value: status };
   return status;
@@ -524,6 +531,57 @@ function buildDoctorReport(status) {
 
 async function handleStatus(res, options) {
   sendJson(res, 200, await collectGuiStatus(options, { deep: false, useCache: true }));
+}
+
+// SSE stream of proxy state. Browsers reconnect automatically on close, so we
+// stay simple: heartbeat every 15s + emit on every manager state transition.
+function handleEvents(req, res, options) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+
+  const manager = getProxyManager();
+  let closed = false;
+
+  const safeWrite = (event, payload) => {
+    if (closed || res.writableEnded || res.destroyed) return;
+    try {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } catch {
+      cleanup();
+    }
+  };
+
+  const onStatus = (payload) => safeWrite("status", { ...payload, at: Date.now() });
+  const onError  = (error)   => safeWrite("error", { message: String(error?.message || error), at: Date.now() });
+
+  const heartbeat = setInterval(() => safeWrite("ping", { at: Date.now() }), 15000);
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    manager.off("status", onStatus);
+    manager.off("error", onError);
+    if (!res.writableEnded) {
+      try { res.end(); } catch (_) { /* ignore */ }
+    }
+  };
+
+  req.on("close", cleanup);
+  req.on("error", cleanup);
+  manager.on("status", onStatus);
+  manager.on("error", onError);
+
+  // Push current state immediately so a reconnecting client renders without
+  // waiting for the next transition.
+  collectGuiStatus(options, { deep: false, useCache: true })
+    .then((status) => safeWrite("status", { ...status, ...manager.describe(), at: Date.now() }))
+    .catch(() => { /* surfaced via /api/status normally */ });
 }
 
 async function handleDoctor(res, options) {
@@ -603,8 +661,23 @@ async function handleImportConfig(req, res) {
 
 async function startGuiServer(options = {}) {
   const uiPort = Number(options.uiPort || 20245);
+  const sseClients = new Set();
+  // Manager state changes happen out-of-band (proxy crash, signal, etc.).
+  // Invalidate the cached /api/status payload so the next read reflects reality
+  // even when the config object did not change.
+  const manager = getProxyManager();
+  const onManagerStatus = () => invalidateStatusCache();
+  manager.on("status", onManagerStatus);
+  manager.on("error", onManagerStatus);
+
   const server = http.createServer(async (req, res) => {
     try {
+      // Tag SSE responses so we can close them when the server shuts down.
+      const reqUrl = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+      if (reqUrl.pathname === "/api/events") {
+        sseClients.add(res);
+        res.on("close", () => sseClients.delete(res));
+      }
       await routeGuiRequest(req, res, options);
     } catch (error) {
       sendApiError(req, res, error);
@@ -620,9 +693,18 @@ async function startGuiServer(options = {}) {
   console.log(`GUI server started: ${url}`);
   appendLog("info", "GUI backend ready", { url });
 
-  // NOTE: windowsRefreshAutoStartPath đã bị bỏ khỏi đây vì nó trigger UAC mỗi lần
-  // người dùng mở app (rất khó chịu). Path của Scheduled Task được refresh tự động
-  // khi user click "Enable Auto Start" lại sau khi cập nhật app.
+  // Wrap server.close so we cleanly tear down SSE clients (which would
+  // otherwise hold the server open forever on a graceful shutdown).
+  const originalClose = server.close.bind(server);
+  server.close = (callback) => {
+    manager.off("status", onManagerStatus);
+    manager.off("error", onManagerStatus);
+    for (const res of sseClients) {
+      try { res.end(); } catch (_) { /* ignore */ }
+    }
+    sseClients.clear();
+    return originalClose(callback);
+  };
 
   return { server, url, port: uiPort };
 }
@@ -643,8 +725,22 @@ async function runGui(options) {
     }
   }
 
-  process.on("SIGTERM", () => { server.close(() => process.exit(0)); });
-  process.on("SIGINT", () => { server.close(() => process.exit(0)); });
+  // Graceful shutdown: stop any embedded proxy first (so port is released and
+  // SSE clients see a final idle status), then close the GUI HTTP server, then
+  // exit. Detached proxies (LaunchDaemon, UAC child) keep running by design.
+  const shutdown = async () => {
+    try {
+      const manager = getProxyManager();
+      if (manager.describe().mode === "embedded") {
+        await manager.stop({});
+      }
+    } catch (_) { /* ignore */ }
+    server.close(() => process.exit(0));
+    // Hard exit fallback in case close() hangs on lingering sockets.
+    setTimeout(() => process.exit(0), 2000).unref();
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
 
 module.exports = {

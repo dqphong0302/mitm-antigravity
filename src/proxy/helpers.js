@@ -22,6 +22,14 @@ const ACCOUNT_BOOTSTRAP_PATTERNS = [
     ":fetchUserInfo",
     ":fetchAvailableModels",
     "/agentPlugins",
+    // Quota & token endpoints — phải passthrough, không intercept
+    ":retrieveUserQuota",
+    ":countTokens",
+    ":getQuota",
+    ":checkQuota",
+    // Billing / entitlement
+    ":getEntitlements",
+    ":getUserEntitlements",
 ];
 
 function isChatRequestUrl(reqUrl) {
@@ -197,6 +205,9 @@ async function retryWithBackoff(fetchFn, options) {
                         status: response.status,
                         waitMs,
                     });
+                    if (response.body && typeof response.body.cancel === "function") {
+                        await response.body.cancel().catch(() => {});
+                    }
                     await new Promise(resolve => setTimeout(resolve, waitMs));
                     continue;
                 }

@@ -21,6 +21,7 @@ function createGuiRoutes(handlers) {
         ["POST", "/api/autostart/enable", handlers.handleEnableAutoStart],
         ["POST", "/api/autostart/disable", handlers.handleDisableAutoStart],
         ["GET", "/api/status", handlers.handleStatus],
+        ["GET", "/api/events", handlers.handleEvents],
         ["POST", "/api/logs/clear", handlers.handleClearLogs],
     ].map(([method, pathname, handler]) => ({ method, pathname, handler }));
 }

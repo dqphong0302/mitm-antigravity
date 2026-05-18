@@ -84,6 +84,213 @@ test("reasoning effort is only used for thinking requests", () => {
   assert.equal(mitm.shouldUseReasoningEffort(null, true), true);
 });
 
+test("isKiroProviderModel detects every Kiro prefix variant", () => {
+  // 9router exposes Kiro under both `kr/` and `kiro/`. Both must trigger sanitization
+  // or AWS CodeWhisperer returns HTTP 400 "Improperly formed request".
+  assert.equal(mitm.isKiroProviderModel("kr/claude-sonnet-4.6-thinking-agentic"), true);
+  assert.equal(mitm.isKiroProviderModel("kiro/claude-sonnet-4.6-thinking-agentic"), true);
+  assert.equal(mitm.isKiroProviderModel("KIRO/claude-sonnet-4.6-agentic"), true);
+  assert.equal(mitm.isKiroProviderModel("KR/Claude-Opus"), true);
+
+  // Non-Kiro providers must NOT match.
+  assert.equal(mitm.isKiroProviderModel("cx/gpt-5.5"), false);
+  assert.equal(mitm.isKiroProviderModel("ag/claude-opus-4-6-thinking"), false);
+  assert.equal(mitm.isKiroProviderModel("anthropic/claude-3-opus"), false);
+  assert.equal(mitm.isKiroProviderModel(""), false);
+  assert.equal(mitm.isKiroProviderModel(null), false);
+});
+
+test("sanitizeKiroRequestBody strips fields Kiro rejects", () => {
+  const body = {
+    model: "kiro/claude-sonnet-4.6-thinking-agentic",
+    request: {
+      contents: [{ role: "user", parts: [{ text: "hi" }] }],
+      generationConfig: {
+        thinkingConfig: { thinkingBudget: 16000, includeThoughts: true },
+        temperature: 0.7,
+      },
+      tools: [{ functionDeclarations: [] }],
+      safetySettings: [],
+      model: "gemini-3.1-pro-high",
+    },
+    reasoning_effort: "xhigh",
+    thinking: { type: "enabled", budget_tokens: 16000 },
+    generationConfig: { temperature: 0.5 },
+    tools: [],
+    toolConfig: {},
+    safetySettings: [],
+    userAgent: "antigravity",
+    stream: true,
+    customMetadata: { foo: "bar" },
+  };
+
+  mitm.sanitizeKiroRequestBody(body);
+
+  // Top-level: only Kiro-allowed keys remain.
+  assert.deepEqual(
+    Object.keys(body).sort(),
+    ["model", "request", "stream", "userAgent"].sort()
+  );
+  assert.equal(body.reasoning_effort, undefined);
+  assert.equal(body.thinking, undefined);
+  assert.equal(body.generationConfig, undefined);
+  assert.equal(body.tools, undefined);
+  assert.equal(body.toolConfig, undefined);
+  assert.equal(body.safetySettings, undefined);
+  assert.equal(body.customMetadata, undefined);
+
+  // Inside request: stale model dropped, configs/tools stripped, contents preserved.
+  assert.equal(body.request.model, undefined);
+  assert.equal(body.request.generationConfig, undefined);
+  assert.equal(body.request.tools, undefined);
+  assert.equal(body.request.safetySettings, undefined);
+  assert.deepEqual(body.request.contents, [{ role: "user", parts: [{ text: "hi" }] }]);
+
+  // Top-level model must not be touched.
+  assert.equal(body.model, "kiro/claude-sonnet-4.6-thinking-agentic");
+});
+
+test("sanitizeKiroRequestBody handles flat (non-nested) body without breaking", () => {
+  // Some Antigravity payloads do not wrap fields in `request`; helper must still strip.
+  const body = {
+    model: "kr/claude-sonnet-4.6-agentic",
+    contents: [{ role: "user", parts: [{ text: "hi" }] }],
+    generationConfig: { temperature: 0.4 },
+    tools: [],
+    reasoning_effort: "high",
+    userAgent: "antigravity",
+  };
+
+  mitm.sanitizeKiroRequestBody(body);
+
+  assert.equal(body.reasoning_effort, undefined);
+  assert.equal(body.generationConfig, undefined);
+  assert.equal(body.tools, undefined);
+  assert.deepEqual(body.contents, [{ role: "user", parts: [{ text: "hi" }] }]);
+  assert.equal(body.model, "kr/claude-sonnet-4.6-agentic");
+});
+
+test("coerceJsonSchemaTypes converts stringified numerics to declared types", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      // Reproducer for: "Invalid schema for function 'mcp_phong-mcp_distill':
+      //   '10' is not of type 'integer'"
+      max_chunks: { type: "integer", default: "10", minimum: "0", maximum: "100" },
+      ratio: { type: "number", default: "0.75", multipleOf: "0.01" },
+      enabled: { type: "boolean", default: "true" },
+      label: { type: "string", default: 42 },
+      mode: { type: "string", enum: ["fast", "slow"] },
+      level: { type: "INTEGER", default: "5" }, // Gemini uppercase form
+    },
+  };
+
+  mitm.coerceJsonSchemaTypes(schema);
+
+  assert.strictEqual(schema.properties.max_chunks.default, 10);
+  assert.strictEqual(schema.properties.max_chunks.minimum, 0);
+  assert.strictEqual(schema.properties.max_chunks.maximum, 100);
+  assert.strictEqual(schema.properties.ratio.default, 0.75);
+  assert.strictEqual(schema.properties.ratio.multipleOf, 0.01);
+  assert.strictEqual(schema.properties.enabled.default, true);
+  assert.strictEqual(schema.properties.label.default, "42");
+  assert.deepEqual(schema.properties.mode.enum, ["fast", "slow"]);
+  assert.strictEqual(schema.properties.level.default, 5);
+});
+
+test("coerceJsonSchemaTypes leaves unparseable values untouched", () => {
+  const schema = {
+    type: "integer",
+    default: "not-a-number",
+    enum: ["foo", "5", "bar"],
+  };
+  mitm.coerceJsonSchemaTypes(schema);
+  assert.strictEqual(schema.default, "not-a-number");
+  // "5" coerces, others stay; we accept partial coercion to keep behavior simple.
+  assert.deepEqual(schema.enum, ["foo", 5, "bar"]);
+});
+
+test("coerceJsonSchemaTypes handles nested objects, arrays, and combinators", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      page: {
+        type: "object",
+        properties: {
+          size: { type: "integer", default: "20" },
+        },
+      },
+      items: {
+        type: "array",
+        items: { type: "integer", default: "1" },
+      },
+      flag: {
+        anyOf: [
+          { type: "integer", default: "0" },
+          { type: "string" },
+        ],
+      },
+    },
+  };
+
+  mitm.coerceJsonSchemaTypes(schema);
+
+  assert.strictEqual(schema.properties.page.properties.size.default, 20);
+  assert.strictEqual(schema.properties.items.items.default, 1);
+  assert.strictEqual(schema.properties.flag.anyOf[0].default, 0);
+});
+
+test("coerceToolSchemasInBody fixes Gemini and OpenAI tool definitions", () => {
+  const body = {
+    request: {
+      tools: [
+        {
+          functionDeclarations: [
+            {
+              name: "mcp_phong-mcp_distill",
+              parameters: {
+                type: "OBJECT",
+                properties: {
+                  max_chunks: { type: "integer", default: "10" },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    },
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "search",
+          parameters: {
+            type: "object",
+            properties: {
+              limit: { type: "integer", default: "25" },
+            },
+          },
+        },
+      },
+    ],
+  };
+
+  mitm.coerceToolSchemasInBody(body);
+
+  assert.strictEqual(
+    body.request.tools[0].functionDeclarations[0].parameters.properties.max_chunks.default,
+    10
+  );
+  assert.strictEqual(body.tools[0].function.parameters.properties.limit.default, 25);
+});
+
+test("coerceToolSchemasInBody is a no-op when no tools are present", () => {
+  const body = { model: "cx/gpt-5.5", request: { contents: [] } };
+  const before = JSON.stringify(body);
+  mitm.coerceToolSchemasInBody(body);
+  assert.equal(JSON.stringify(body), before);
+});
+
 test("stripInternalInstructionLeaks removes leaked internal instruction text", () => {
   const leaked = "CRITICAL INSTRUCTION 1: use tool A; CRITICAL INSTRUCTION 2: use tool B; visible answer";
   const antigravityLeak = "CRITICAL INSTRUCTION 1: specific tools first: view_file for relevant workflow, run_command for read-only secret discovery and controlled copy, write_to_file for task/walkthrough. Avoid cat, grep, sed, ls. CRITICAL INSTRUCTION 2: related tools: view_file, run_command, command_status, write_to_file. Need inspect server workflow before old LXC access.";
@@ -833,6 +1040,7 @@ test("GUI route table finds known routes and rejects unknown routes", () => {
     handleEnableAutoStart() { },
     handleDisableAutoStart() { },
     handleStatus() { },
+    handleEvents() { },
     handleClearLogs() { },
   };
 
@@ -842,6 +1050,7 @@ test("GUI route table finds known routes and rejects unknown routes", () => {
   assert.equal(findGuiRoute(routes, "POST", "/api/start-proxy").handler, handlers.handleStartProxy);
   assert.equal(findGuiRoute(routes, "POST", "/api/stop-and-cleanup").handler, handlers.handleStopAndCleanup);
   assert.equal(findGuiRoute(routes, "POST", "/api/apply-app-trust").handler, handlers.handleApplyAppTrust);
+  assert.equal(findGuiRoute(routes, "GET", "/api/events").handler, handlers.handleEvents);
   assert.equal(findGuiRoute(routes, "DELETE", "/api/bootstrap"), null);
   assert.equal(findGuiRoute(routes, "GET", "/api/missing"), null);
 });
@@ -914,6 +1123,194 @@ test("proxy can start on an unprivileged port and stopProxyByPort stops it", asy
     assert.equal(await mitm.waitForProxyHealth(port, mitm.DEFAULT_TARGET, 2), false);
   } finally {
     if (!child.killed) child.kill("SIGTERM");
+  }
+});
+
+test("ProxyManager runs the proxy embedded on an unprivileged port", async () => {
+  const { ProxyManager, canRunEmbedded } = require("../src/proxy/manager");
+  const port = await getFreePort();
+  await mitm.generateCert(mitm.DEFAULT_TARGET_HOSTS, { force: true });
+
+  const config = {
+    port,
+    targetHost: mitm.DEFAULT_TARGET,
+    targetHosts: mitm.DEFAULT_TARGET_HOSTS,
+    routerUrl: "http://127.0.0.1:9/v1/chat/completions",
+    apiKey: "",
+    modelMap: {},
+    alwaysIntercept: false,
+    maxRetries: 0,
+    retryDelay: 100,
+    retryBackoff: 1,
+    requestTimeoutMs: 5000,
+  };
+
+  // Unprivileged port → embedded must be allowed.
+  assert.equal(canRunEmbedded(config), true);
+
+  const manager = new ProxyManager();
+  const start = await manager.start({ config, prefer: "embedded" });
+  assert.equal(start.mode, "embedded");
+  assert.equal(start.started, true);
+
+  try {
+    assert.equal(await mitm.waitForProxyHealth(port, mitm.DEFAULT_TARGET, 20), true);
+
+    // Reload should swap the listener in-place without losing the port.
+    const reload = await manager.reload({ config });
+    assert.equal(reload.mode, "embedded");
+    assert.equal(reload.reloaded, true);
+    assert.equal(await mitm.waitForProxyHealth(port, mitm.DEFAULT_TARGET, 20), true);
+  } finally {
+    await manager.stop({ config });
+  }
+
+  assert.equal(await mitm.waitForProxyHealth(port, mitm.DEFAULT_TARGET, 2), false);
+  assert.equal(manager.isRunning(), false);
+});
+
+test("ProxyManager.start adopts an existing detached proxy without restart", async () => {
+  // Simulates the GUI launching when the user already has a CLI proxy running.
+  const { ProxyManager } = require("../src/proxy/manager");
+  const port = await getFreePort();
+  await mitm.generateCert(mitm.DEFAULT_TARGET_HOSTS, { force: true });
+
+  const config = {
+    port,
+    targetHost: mitm.DEFAULT_TARGET,
+    targetHosts: mitm.DEFAULT_TARGET_HOSTS,
+    routerUrl: "http://127.0.0.1:9/v1/chat/completions",
+    apiKey: "",
+    modelMap: {},
+    alwaysIntercept: false,
+    maxRetries: 0,
+    retryDelay: 100,
+    retryBackoff: 1,
+    requestTimeoutMs: 5000,
+  };
+
+  // Boot a proxy via the embedded path under one manager…
+  const owner = new ProxyManager();
+  await owner.start({ config, prefer: "embedded" });
+
+  // …then have a fresh manager observe it. It must report detached + skip start.
+  const observer = new ProxyManager();
+  try {
+    const result = await observer.start({ config });
+    assert.equal(result.mode, "detached");
+    assert.equal(result.alreadyRunning, true);
+    assert.equal(result.started, false);
+  } finally {
+    await owner.stop({ config });
+  }
+});
+
+test("ProxyManager serializes overlapping start requests for the same port", async () => {
+  // If a UI sends two concurrent Start clicks, only one runProxy invocation
+  // should win; the second must observe the first's result. Without the
+  // serialization lock, both call runProxy → second hits EADDRINUSE.
+  const { ProxyManager } = require("../src/proxy/manager");
+  const port = await getFreePort();
+  await mitm.generateCert(mitm.DEFAULT_TARGET_HOSTS, { force: true });
+
+  const config = {
+    port,
+    targetHost: mitm.DEFAULT_TARGET,
+    targetHosts: mitm.DEFAULT_TARGET_HOSTS,
+    routerUrl: "http://127.0.0.1:9/v1/chat/completions",
+    apiKey: "",
+    modelMap: {},
+    alwaysIntercept: false,
+    maxRetries: 0,
+    retryDelay: 100,
+    retryBackoff: 1,
+    requestTimeoutMs: 5000,
+  };
+
+  const manager = new ProxyManager();
+  try {
+    const [first, second] = await Promise.all([
+      manager.start({ config, prefer: "embedded" }),
+      manager.start({ config, prefer: "embedded" }),
+    ]);
+    assert.equal(first.mode, "embedded");
+    assert.equal(second.mode, "embedded");
+    // Exactly one call should have actually started the listener.
+    assert.equal(Number(first.started === true) + Number(second.started === true), 1);
+  } finally {
+    await manager.stop({ config });
+  }
+});
+
+test("GUI /api/events streams proxy state transitions", async () => {
+  // Run the real GUI server against the singleton ProxyManager and assert
+  // that a status event reaches an EventSource-style client when the manager
+  // transitions from idle → embedded.
+  const { startGuiServer } = require("../src/gui");
+  const { getProxyManager } = require("../src/proxy/manager");
+
+  const uiPort  = await getFreePort();
+  const proxyPort = await getFreePort();
+  await mitm.generateCert(mitm.DEFAULT_TARGET_HOSTS, { force: true });
+
+  const { server } = await startGuiServer({ uiPort, port: proxyPort });
+
+  // Buffer SSE chunks until we see a "status" event with running:true.
+  const url = `http://127.0.0.1:${uiPort}/api/events`;
+  const response = await fetch(url, { headers: { Accept: "text/event-stream" } });
+  assert.equal(response.ok, true);
+  assert.match(String(response.headers.get("content-type") || ""), /text\/event-stream/);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let runningSeen = false;
+
+  const config = {
+    port: proxyPort,
+    targetHost: mitm.DEFAULT_TARGET,
+    targetHosts: mitm.DEFAULT_TARGET_HOSTS,
+    routerUrl: "http://127.0.0.1:9/v1/chat/completions",
+    apiKey: "",
+    modelMap: {},
+    alwaysIntercept: false,
+    maxRetries: 0,
+    retryDelay: 100,
+    retryBackoff: 1,
+    requestTimeoutMs: 5000,
+  };
+
+  // Trigger a state transition once we have an open stream.
+  const manager = getProxyManager();
+  const startPromise = manager.start({ config, prefer: "embedded" });
+
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline && !runningSeen) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // Parse complete SSE events (separated by blank line).
+    const events = buffer.split("\n\n");
+    buffer = events.pop();
+    for (const event of events) {
+      if (!event.includes("event: status")) continue;
+      const dataLine = event.split("\n").find((l) => l.startsWith("data:"));
+      if (!dataLine) continue;
+      try {
+        const parsed = JSON.parse(dataLine.slice(5).trim());
+        if (parsed.running === true) runningSeen = true;
+      } catch { /* ignore malformed payloads */ }
+    }
+  }
+
+  await startPromise;
+
+  try {
+    assert.equal(runningSeen, true, "did not receive a running:true status event");
+  } finally {
+    await reader.cancel().catch(() => {});
+    await manager.stop({ config });
+    await new Promise((resolve) => server.close(() => resolve()));
   }
 });
 
