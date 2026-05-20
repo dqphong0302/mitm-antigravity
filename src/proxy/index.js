@@ -30,6 +30,7 @@ const {
   logProxyError,
   logProxyMap,
   logProxyOk,
+  logProxyPass,
   logProxyReady,
 } = require("./logger");
 
@@ -956,6 +957,7 @@ async function runProxy(options) {
         }
       }
       if (body.request && requestBody.contents && !body.userAgent) body.userAgent = "antigravity";
+      if (String(req.url || "").includes(":streamGenerateContent")) body.stream = true;
 
       // ─── Thinking / Reasoning passthrough ───────────────────────────────────
       // Antigravity gửi thinkingConfig theo Gemini API format; proxy phải map sang
@@ -1041,11 +1043,19 @@ async function runProxy(options) {
 
       const headers = buildRouterHeaders(req.headers, options.apiKey);
       const targetModel = body.model || originalModel;
+      const routerUrl = new URL(chatCompletionsRouterUrl(options.routerUrl));
 
       logProxyMap({
         sourceModel: originalModel,
         targetModel,
         reasoning: body.reasoning_effort || "",
+      });
+      logProxyPass({
+        label: "UPSTREAM",
+        method: "POST",
+        targetHost: routerUrl.host,
+        requestPath: routerUrl.pathname,
+        extra: `model=${targetModel} stream=${body.stream === true}`,
       });
 
       const startTime = Date.now();
@@ -1079,51 +1089,59 @@ async function runProxy(options) {
           }),
           { maxRetries: options.maxRetries, retryDelay: options.retryDelay, retryBackoff: options.retryBackoff }
         );
+        logProxyPass({
+          label: "UPSTREAM",
+          statusCode: response.status,
+          method: "POST",
+          targetHost: routerUrl.host,
+          requestPath: routerUrl.pathname,
+          extra: `headers content-type=${response.headers.get("content-type") || "-"}`,
+        });
+
+        if (!response.ok) {
+          const errText = await sendUpstreamErrorResponse(res, response);
+          res.off("close", abortUpstream);
+          logProxyError({ message: `upstream ${response.status}`, body: errText });
+          return;
+        }
+
+        const contentType = response.headers.get("content-type") || "application/json";
+        const responseHeaders = {
+          "Content-Type": contentType,
+          "Cache-Control": response.headers.get("cache-control") || "no-cache",
+        };
+        if (contentType.includes("text/event-stream")) {
+          responseHeaders.Connection = "keep-alive";
+          responseHeaders["X-Accel-Buffering"] = "no";
+        }
+        res.writeHead(response.status, responseHeaders);
+
+        if (!response.body) {
+          const raw = await response.text().catch(() => "");
+          const safeBody = contentType.includes("json")
+            ? sanitizeInternalInstructionJsonText(raw)
+            : stripInternalInstructionLeaks(raw);
+          res.end(safeBody);
+          res.off("close", abortUpstream);
+          return;
+        }
+
+        if (contentType.includes("text/event-stream")) {
+          await streamSanitizedSseResponse(response.body, res);
+        } else {
+          const raw = await readBoundedTextResponse(response.body);
+          const safeBody = contentType.includes("json")
+            ? sanitizeInternalInstructionJsonText(raw)
+            : stripInternalInstructionLeaks(raw);
+          if (isResponseWritable(res)) res.end(safeBody);
+        }
+
+        res.off("close", abortUpstream);
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        logProxyOk({ model: targetModel, reasoning: body.reasoning_effort || "", elapsedSeconds: elapsed });
       } finally {
         if (timeoutId) clearTimeout(timeoutId);
       }
-
-      if (!response.ok) {
-        const errText = await sendUpstreamErrorResponse(res, response);
-        res.off("close", abortUpstream);
-        logProxyError({ message: `upstream ${response.status}`, body: errText });
-        return;
-      }
-
-      const contentType = response.headers.get("content-type") || "application/json";
-      const responseHeaders = {
-        "Content-Type": contentType,
-        "Cache-Control": response.headers.get("cache-control") || "no-cache",
-      };
-      if (contentType.includes("text/event-stream")) {
-        responseHeaders.Connection = "keep-alive";
-        responseHeaders["X-Accel-Buffering"] = "no";
-      }
-      res.writeHead(response.status, responseHeaders);
-
-      if (!response.body) {
-        const raw = await response.text().catch(() => "");
-        const safeBody = contentType.includes("json")
-          ? sanitizeInternalInstructionJsonText(raw)
-          : stripInternalInstructionLeaks(raw);
-        res.end(safeBody);
-        res.off("close", abortUpstream);
-        return;
-      }
-
-      if (contentType.includes("text/event-stream")) {
-        await streamSanitizedSseResponse(response.body, res);
-      } else {
-        const raw = await readBoundedTextResponse(response.body);
-        const safeBody = contentType.includes("json")
-          ? sanitizeInternalInstructionJsonText(raw)
-          : stripInternalInstructionLeaks(raw);
-        if (isResponseWritable(res)) res.end(safeBody);
-      }
-
-      res.off("close", abortUpstream);
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      logProxyOk({ model: targetModel, reasoning: body.reasoning_effort || "", elapsedSeconds: elapsed });
     } catch (error) {
       if (typeof abortUpstream === "function") res.off("close", abortUpstream);
       logProxyError({ message: error.message });
