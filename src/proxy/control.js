@@ -49,21 +49,31 @@ const {
   windowsRegisterAutoStartScript,
 } = require("../system/autostart");
 
-async function isPortListening(port) {
+async function isPortListening(port, options = {}) {
   if (IS_WIN) {
     return (await pidsListeningOnPortWindows(port)).length > 0;
   }
 
   try {
     const output = await execPromise(`lsof -nP -iTCP:${Number(port)} -sTCP:LISTEN -t`);
-    return output.trim().length > 0;
+    if (output.trim().length > 0) return true;
   } catch {
-    return false;
+    // fall through to sudo retry below for privileged ports
   }
+
+  // Privileged port without owner visible → retry under sudo if available.
+  const portNum = Number(port);
+  if (portNum > 0 && portNum < 1024 && process.platform === "darwin" && options.sudoPassword) {
+    const pids = await pidsListeningOnPortUnix(port, options);
+    return pids.length > 0;
+  }
+  return false;
 }
 
-async function getPortOwners(port) {
-  const pids = IS_WIN ? await pidsListeningOnPortWindows(port) : await pidsListeningOnPortUnix(port);
+async function getPortOwners(port, options = {}) {
+  const pids = IS_WIN
+    ? await pidsListeningOnPortWindows(port)
+    : await pidsListeningOnPortUnix(port, options);
   if (pids.length === 0) return [];
   if (IS_WIN) return processDetailsWindows(pids);
   return processDetailsUnix(pids);
@@ -184,8 +194,9 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
     return { started: false, alreadyRunning: true, port };
   }
 
-  if (await isPortListening(port)) {
-    const owners = await getPortOwners(port);
+  const opts = { sudoPassword };
+  if (await isPortListening(port, opts)) {
+    const owners = await getPortOwners(port, opts);
     const ownerText = formatPortOwners(owners) || "unknown process";
     const hint = portConflictHint(port);
     const error = new Error(
@@ -257,8 +268,8 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
     if (IS_WIN && !(await isWindowsElevated())) {
       hints.push("UAC prompt may have been cancelled. Re-run and approve the elevation dialog.");
     }
-    if (await isPortListening(port)) {
-      const owners = await getPortOwners(port);
+    if (await isPortListening(port, opts)) {
+      const owners = await getPortOwners(port, opts);
       const ownerText = formatPortOwners(owners) || "unknown process";
       hints.push(`Port ${port} is listening but health check fails – owner: ${ownerText}. Likely an older proxy version; stop it first.`);
     } else {
@@ -271,9 +282,31 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
   return { started: true, alreadyRunning: false, port, logPath };
 }
 
-async function pidsListeningOnPortUnix(port) {
+async function pidsListeningOnPortUnix(port, options = {}) {
+  // macOS hides socket owners of privileged ports (<1024) from non-root users.
+  // Without sudo, `lsof -i :443 -t` returns nothing even when a zombie process
+  // is listening — that's why "Force Kill Port" buttons appear to do nothing.
+  // We retry with sudo when a password is available and the port is privileged.
+  const portNum = Number(port);
+  const isPrivileged = portNum > 0 && portNum < 1024;
+  const tryWithSudo = isPrivileged
+    && process.platform === "darwin"
+    && Boolean(options.sudoPassword);
+
   try {
-    const stdout = await execPromise(`lsof -ti tcp:${Number(port)} -sTCP:LISTEN 2>/dev/null || true`);
+    const stdout = await execPromise(`lsof -ti tcp:${portNum} -sTCP:LISTEN 2>/dev/null || true`);
+    const pids = parsePidsFromOutput(stdout);
+    if (pids.length > 0 || !tryWithSudo) return pids;
+  } catch (_) {
+    if (!tryWithSudo) return [];
+  }
+
+  // Fallback: ask sudo for the privileged port owner.
+  try {
+    const stdout = await execWithSudo(
+      `lsof -ti tcp:${portNum} -sTCP:LISTEN`,
+      options.sudoPassword
+    );
     return parsePidsFromOutput(stdout);
   } catch (_) {
     return [];
@@ -374,7 +407,8 @@ async function killPidsUnix(pids, sudoPassword) {
 // removePlist: truyền true khi muốn full cleanup (Stop & Remove DNS).
 // Nếu false, chỉ stop cho session này – proxy vẫn auto-start sau reboot (via LaunchDaemon).
 async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET, removePlist = false }) {
-  if (!(await checkProxyHealth(port, targetHost)) && !(await isPortListening(port))) {
+  const opts = { sudoPassword };
+  if (!(await checkProxyHealth(port, targetHost)) && !(await isPortListening(port, opts))) {
     return { stopped: false, wasRunning: false, port };
   }
 
@@ -391,17 +425,17 @@ async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET
         appendLog("warn", "Failed to unload proxy LaunchDaemon before PID kill", { message: error.message });
       });
       for (let i = 0; i < 5; i += 1) {
-        if (!(await isPortListening(port))) return { stopped: true, wasRunning: true, port };
+        if (!(await isPortListening(port, opts))) return { stopped: true, wasRunning: true, port };
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
     }
-    const pids = await pidsListeningOnPortUnix(port);
+    const pids = await pidsListeningOnPortUnix(port, opts);
     if (pids.length === 0) return { stopped: false, wasRunning: false, port };
     await killPidsUnix(pids, sudoPassword);
   }
 
   for (let i = 0; i < 10; i += 1) {
-    if (!(await isPortListening(port))) return { stopped: true, wasRunning: true, port };
+    if (!(await isPortListening(port, opts))) return { stopped: true, wasRunning: true, port };
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
   return { stopped: true, wasRunning: true, port, warning: `Port ${port} may still be shutting down` };

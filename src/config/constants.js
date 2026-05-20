@@ -3,6 +3,12 @@ const path = require("path");
 const DEFAULT_TARGET_HOSTS = [
   "daily-cloudcode-pa.googleapis.com",
   "cloudcode-pa.googleapis.com",
+  "daily-cloudaicompanion.googleapis.com",
+  "cloudaicompanion.googleapis.com",
+  "daily-cloudaicompanion.sandbox.googleapis.com",
+  "cloudaicompanion.sandbox.googleapis.com",
+  "daily-cloudcode-pa.sandbox.googleapis.com",
+  "cloudcode-pa.sandbox.googleapis.com",
 ];
 const DEFAULT_TARGET = DEFAULT_TARGET_HOSTS[0];
 

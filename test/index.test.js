@@ -109,41 +109,46 @@ test("sanitizeKiroRequestBody strips fields Kiro rejects", () => {
         thinkingConfig: { thinkingBudget: 16000, includeThoughts: true },
         temperature: 0.7,
       },
-      tools: [{ functionDeclarations: [] }],
+      tools: [{ functionDeclarations: [{ name: "search", parameters: {} }] }],
       safetySettings: [],
       model: "gemini-3.1-pro-high",
     },
     reasoning_effort: "xhigh",
     thinking: { type: "enabled", budget_tokens: 16000 },
-    generationConfig: { temperature: 0.5 },
-    tools: [],
-    toolConfig: {},
     safetySettings: [],
     userAgent: "antigravity",
     stream: true,
     customMetadata: { foo: "bar" },
+    // Top-level tools (some Antigravity payloads put them here too) must
+    // survive — they're MCP tool definitions, stripping them turns tool
+    // calls into raw "<tool_call>" text in chat.
+    tools: [{ functionDeclarations: [{ name: "echo", parameters: {} }] }],
   };
 
   mitm.sanitizeKiroRequestBody(body);
 
-  // Top-level: only Kiro-allowed keys remain.
+  // Top-level: only Kiro-allowed keys remain (now includes tools).
   assert.deepEqual(
     Object.keys(body).sort(),
-    ["model", "request", "stream", "userAgent"].sort()
+    ["model", "request", "stream", "tools", "userAgent"].sort()
   );
   assert.equal(body.reasoning_effort, undefined);
   assert.equal(body.thinking, undefined);
-  assert.equal(body.generationConfig, undefined);
-  assert.equal(body.tools, undefined);
-  assert.equal(body.toolConfig, undefined);
   assert.equal(body.safetySettings, undefined);
   assert.equal(body.customMetadata, undefined);
+  // Tools must survive sanitization so MCP tool calling works.
+  assert.deepEqual(body.tools, [{ functionDeclarations: [{ name: "echo", parameters: {} }] }]);
 
-  // Inside request: stale model dropped, configs/tools stripped, contents preserved.
+  // Inside request: stale model dropped, thinkingConfig stripped, temperature
+  // preserved, safetySettings stripped, tools preserved.
   assert.equal(body.request.model, undefined);
-  assert.equal(body.request.generationConfig, undefined);
-  assert.equal(body.request.tools, undefined);
+  assert.equal(body.request.generationConfig.thinkingConfig, undefined);
+  assert.equal(body.request.generationConfig.temperature, 0.7);
   assert.equal(body.request.safetySettings, undefined);
+  assert.deepEqual(
+    body.request.tools,
+    [{ functionDeclarations: [{ name: "search", parameters: {} }] }]
+  );
   assert.deepEqual(body.request.contents, [{ role: "user", parts: [{ text: "hi" }] }]);
 
   // Top-level model must not be touched.
@@ -155,8 +160,8 @@ test("sanitizeKiroRequestBody handles flat (non-nested) body without breaking", 
   const body = {
     model: "kr/claude-sonnet-4.6-agentic",
     contents: [{ role: "user", parts: [{ text: "hi" }] }],
-    generationConfig: { temperature: 0.4 },
-    tools: [],
+    generationConfig: { temperature: 0.4, thinkingConfig: { thinkingBudget: 8000 } },
+    tools: [{ functionDeclarations: [{ name: "search", parameters: {} }] }],
     reasoning_effort: "high",
     userAgent: "antigravity",
   };
@@ -164,8 +169,13 @@ test("sanitizeKiroRequestBody handles flat (non-nested) body without breaking", 
   mitm.sanitizeKiroRequestBody(body);
 
   assert.equal(body.reasoning_effort, undefined);
-  assert.equal(body.generationConfig, undefined);
-  assert.equal(body.tools, undefined);
+  assert.equal(body.generationConfig.thinkingConfig, undefined);
+  assert.equal(body.generationConfig.temperature, 0.4);
+  // Tools must remain so MCP tool calling works through Kiro.
+  assert.deepEqual(
+    body.tools,
+    [{ functionDeclarations: [{ name: "search", parameters: {} }] }]
+  );
   assert.deepEqual(body.contents, [{ role: "user", parts: [{ text: "hi" }] }]);
   assert.equal(body.model, "kr/claude-sonnet-4.6-agentic");
 });
@@ -575,6 +585,9 @@ test("proxy defaults to passthrough except model list and LLM endpoints", () => 
   assert.equal(mitm.isLoadCodeAssistRequest("/v1internal:loadCodeAssist"), true);
   assert.equal(mitm.isChatRequestUrl("/v1internal:streamGenerateContent"), true);
   assert.equal(mitm.isAccountBootstrapRequest("/v1internal:fetchUserInfo"), true);
+  assert.equal(mitm.isAccountBootstrapRequest("/v1internal:listExperiments"), true);
+  assert.equal(mitm.isAccountBootstrapRequest("/v1internal:onboardUser"), true);
+  assert.equal(mitm.isAccountBootstrapRequest("/v1internal:recordTrajectoryAnalytics"), true);
   assert.equal(mitm.isChatRequestUrl("/v1internal:fetchUserInfo"), false);
   assert.equal(mitm.isAccountBootstrapRequest("/v1internal:streamGenerateContent"), false);
 });
@@ -877,6 +890,56 @@ test("upstream retry and error helpers preserve provider failures", () => {
   assert.equal(wrapped.error.type, "upstream_error");
   assert.equal(wrapped.error.status, 524);
   assert.match(wrapped.error.message, /timeout/);
+});
+
+test("isClientAbortError flags client-cancelled fetches", () => {
+  // Both Node's native AbortError and our explicit "client disconnected"
+  // string must short-circuit retry — otherwise the proxy burns provider
+  // quota retrying a request whose consumer is already gone.
+  const abortErr = new Error("aborted");
+  abortErr.name = "AbortError";
+  assert.equal(mitm.isClientAbortError(abortErr), true);
+
+  const codeErr = new Error("aborted by signal");
+  codeErr.code = "ABORT_ERR";
+  assert.equal(mitm.isClientAbortError(codeErr), true);
+
+  assert.equal(
+    mitm.isClientAbortError(new Error("client disconnected before upstream completed")),
+    true
+  );
+
+  assert.equal(mitm.isClientAbortError(new Error("upstream 502 bad gateway")), false);
+  assert.equal(mitm.isClientAbortError(null), false);
+});
+
+test("retryWithBackoff skips retries when the client has aborted", async () => {
+  // Setup: fetchFn always throws AbortError, mimicking what fetch() does once
+  // its AbortSignal fires. With retries=3 the helper used to wait through all
+  // backoffs and produce ghost upstream calls. With the abort short-circuit
+  // it must throw on the first attempt.
+  let calls = 0;
+  const abortErr = new Error("aborted");
+  abortErr.name = "AbortError";
+  const fetchFn = async () => { calls += 1; throw abortErr; };
+
+  await assert.rejects(
+    () => mitm.retryWithBackoff(fetchFn, { maxRetries: 3, retryDelay: 10, retryBackoff: 1 }),
+    (err) => err.name === "AbortError"
+  );
+  assert.equal(calls, 1, "abort should not retry — got " + calls + " calls");
+});
+
+test("retryWithBackoff still retries transient non-abort errors", async () => {
+  let calls = 0;
+  const fetchFn = async () => {
+    calls += 1;
+    if (calls < 3) throw new Error("connect ECONNRESET");
+    return { ok: true, status: 200 };
+  };
+  const result = await mitm.retryWithBackoff(fetchFn, { maxRetries: 3, retryDelay: 5, retryBackoff: 1 });
+  assert.equal(result.ok, true);
+  assert.equal(calls, 3);
 });
 
 test("chatCompletionsRouterUrl normalizes Responses endpoint back to chat endpoint", () => {

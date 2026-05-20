@@ -454,20 +454,50 @@ function coerceToolSchemasInBody(body) {
 
 function sanitizeKiroRequestBody(body) {
   if (!body || typeof body !== "object") return body;
+
+  // Kiro/AWS CodeWhisperer rejects these top-level fields with HTTP 400
+  // "Improperly formed request":
+  //   - `reasoning_effort` (OpenAI-style) and `thinking` (Anthropic-style):
+  //     both are duplicated by the model name suffix `-thinking-agentic`.
+  //   - any unknown top-level metadata field.
+  // We DO keep `tools` / `toolConfig`. Those carry MCP tool definitions
+  // Antigravity sent so the model can issue `toolUseEvent`s. Stripping them
+  // forces the model to fabricate `<tool_call>` text instead of structured
+  // tool calls, which is exactly what the user observed in chat.
   delete body.reasoning_effort;
   delete body.thinking;
 
   const requestBody = body.request && typeof body.request === "object" ? body.request : body;
 
-  if (requestBody.generationConfig) delete requestBody.generationConfig;
-  if (body !== requestBody && body.generationConfig) delete body.generationConfig;
-  for (const key of ["tools", "toolConfig", "tool_config", "safetySettings"]) {
-    delete requestBody[key];
-    if (body !== requestBody) delete body[key];
+  // Inside generationConfig, Kiro only rejects `thinkingConfig` (Gemini's way
+  // of asking for reasoning). Keep temperature/topP/maxOutputTokens/etc — Kiro
+  // ignores anything it does not understand without 400'ing as long as the
+  // shape is valid.
+  for (const cfg of [requestBody.generationConfig, body !== requestBody ? body.generationConfig : null]) {
+    if (cfg && typeof cfg === "object") {
+      delete cfg.thinkingConfig;
+    }
   }
 
+  // safetySettings is a Vertex/Gemini concept and Kiro 400s on it. Drop only
+  // that — keep tools so MCP tool calling survives.
+  delete requestBody.safetySettings;
+  if (body !== requestBody) delete body.safetySettings;
+
+  // Keep top-level fields Kiro/9router actually use. We must keep `tools`,
+  // `toolConfig`, and `tool_config` here so the 9router translator sees the
+  // tool catalog when it converts the Gemini-style payload to Kiro events.
+  // We also keep `generationConfig` (with thinkingConfig already stripped
+  // above) for the flat-body shape; in nested-body shape it lives under
+  // `request` and is already handled there.
+  const KIRO_ALLOWED_TOP_LEVEL_KEEP = new Set([
+    "model", "request", "contents", "messages",
+    "userAgent", "stream", "system", "systemInstruction",
+    "tools", "toolConfig", "tool_config",
+    "generationConfig",
+  ]);
   for (const key of Object.keys(body)) {
-    if (!KIRO_ALLOWED_TOP_LEVEL.has(key)) delete body[key];
+    if (!KIRO_ALLOWED_TOP_LEVEL_KEEP.has(key)) delete body[key];
   }
 
   // 9router reads model from top-level body.model. A stale Gemini alias inside

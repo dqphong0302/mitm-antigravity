@@ -328,8 +328,9 @@ async function handleForceKillPort(req, res, options) {
   const cfg = readConfig();
   const sudoPassword = String(body.sudoPassword || "");
   const port = Number(cfg.port || options.port || 443);
-  // Lấy thông tin process đang chiếm port trước khi kill để trả về cho UI
-  const owners = await getPortOwners(port);
+  // Privileged ports on macOS hide their owner from non-root lsof, so we must
+  // pass sudoPassword down so getPortOwners/stopProxyByPort can elevate.
+  const owners = await getPortOwners(port, { sudoPassword });
   const ownerText = formatPortOwners(owners);
   const wasListening = owners.length > 0;
   appendLog("info", "Force-kill port requested", { port, owner: ownerText || "(none)" });

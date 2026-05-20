@@ -113,7 +113,16 @@ fi
 # Nếu thiếu → cảnh báo; muốn fix thì chạy: sudo node index.js setup
 
 HOSTS_FILE="/etc/hosts"
-DNS_TARGETS=("cloudcode-pa.googleapis.com" "daily-cloudcode-pa.googleapis.com")
+DNS_TARGETS=(
+  "daily-cloudcode-pa.googleapis.com"
+  "cloudcode-pa.googleapis.com"
+  "daily-cloudaicompanion.googleapis.com"
+  "cloudaicompanion.googleapis.com"
+  "daily-cloudaicompanion.sandbox.googleapis.com"
+  "cloudaicompanion.sandbox.googleapis.com"
+  "daily-cloudcode-pa.sandbox.googleapis.com"
+  "cloudcode-pa.sandbox.googleapis.com"
+)
 # Proxy thêm cả IPv4 (127.0.0.1) lẫn IPv6 (::1) để block cả A và AAAA records
 DNS_IPS=("127.0.0.1" "::1")
 DNS_OK=true

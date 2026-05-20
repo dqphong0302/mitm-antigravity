@@ -15,48 +15,61 @@ const ROUTER_STRIP_HEADERS = new Set([
 ]);
 
 const CHAT_URL_PATTERNS = [":generateContent", ":streamGenerateContent"];
-const ACCOUNT_BOOTSTRAP_PATTERNS = [
+const MODEL_BOOTSTRAP_URL_PATTERNS = [":fetchAvailableModels", ":fetchUserInfo", ":loadCodeAssist"];
+const ACCOUNT_BOOTSTRAP_URL_PATTERNS = [
     ":fetchAdminControls",
     "/cascadeNuxes",
     ":loadCodeAssist",
     ":fetchUserInfo",
     ":fetchAvailableModels",
+    ":listExperiments",
+    ":onboardUser",
+    ":recordTrajectoryAnalytics",
     "/agentPlugins",
-    // Quota & token endpoints — phải passthrough, không intercept
+];
+const ACCOUNT_QUOTA_URL_PATTERNS = [
     ":retrieveUserQuota",
     ":countTokens",
     ":getQuota",
     ":checkQuota",
-    // Billing / entitlement
+];
+const ACCOUNT_ENTITLEMENT_URL_PATTERNS = [
     ":getEntitlements",
     ":getUserEntitlements",
 ];
+const ACCOUNT_PASSTHROUGH_URL_PATTERNS = [
+    ...ACCOUNT_BOOTSTRAP_URL_PATTERNS,
+    ...ACCOUNT_QUOTA_URL_PATTERNS,
+    ...ACCOUNT_ENTITLEMENT_URL_PATTERNS,
+];
+
+function urlIncludesAny(reqUrl, patterns) {
+    const value = String(reqUrl || "");
+    return patterns.some((pattern) => value.includes(pattern));
+}
 
 function isChatRequestUrl(reqUrl) {
-    return CHAT_URL_PATTERNS.some((pattern) => String(reqUrl || "").includes(pattern));
+    return urlIncludesAny(reqUrl, CHAT_URL_PATTERNS);
 }
 
 function isFetchAvailableModelsRequest(reqUrl) {
-    return String(reqUrl || "").includes(":fetchAvailableModels");
+    return urlIncludesAny(reqUrl, [":fetchAvailableModels"]);
 }
 
 function isFetchUserInfoRequest(reqUrl) {
-    return String(reqUrl || "").includes(":fetchUserInfo");
+    return urlIncludesAny(reqUrl, [":fetchUserInfo"]);
 }
 
 function isLoadCodeAssistRequest(reqUrl) {
-    return String(reqUrl || "").includes(":loadCodeAssist");
+    return urlIncludesAny(reqUrl, [":loadCodeAssist"]);
 }
 
 function isModelBootstrapMergeRequest(reqUrl) {
-    return isFetchAvailableModelsRequest(reqUrl)
-        || isFetchUserInfoRequest(reqUrl)
-        || isLoadCodeAssistRequest(reqUrl);
+    return urlIncludesAny(reqUrl, MODEL_BOOTSTRAP_URL_PATTERNS);
 }
 
 function isAccountBootstrapRequest(reqUrl) {
-    const value = String(reqUrl || "");
-    return ACCOUNT_BOOTSTRAP_PATTERNS.some((pattern) => value.includes(pattern));
+    return urlIncludesAny(reqUrl, ACCOUNT_PASSTHROUGH_URL_PATTERNS);
 }
 
 function buildRouterHeaders(clientHeaders, apiKey) {
@@ -181,6 +194,16 @@ async function sendUpstreamErrorResponse(res, response) {
     return bodyText;
 }
 
+function isClientAbortError(error) {
+    if (!error) return false;
+    // AbortController.abort() throws an Error whose name is "AbortError" in
+    // node's fetch impl. We also flag explicit "client disconnected ..."
+    // strings we set ourselves in the proxy.
+    if (error.name === "AbortError") return true;
+    if (error.code === "ABORT_ERR") return true;
+    const msg = String(error.message || "").toLowerCase();
+    return msg.includes("client disconnected") || msg.includes("aborted");
+}
 
 async function retryWithBackoff(fetchFn, options) {
     // Guard NaN – nếu config invalid thì dùng safe defaults
@@ -216,6 +239,13 @@ async function retryWithBackoff(fetchFn, options) {
             return response;
         } catch (error) {
             lastError = error;
+            // Client already disconnected – nobody is reading the response.
+            // Retrying just burns provider quota and produces ghost successful
+            // calls on 9router with output=0. Surface the error immediately so
+            // the proxy can clean up and the next request can proceed.
+            if (isClientAbortError(error)) {
+                throw error;
+            }
             if (attempt < maxRetries) {
                 const waitMs = retryDelay * Math.pow(retryBackoff, attempt);
                 logProxyRetry({
@@ -238,6 +268,7 @@ module.exports = {
     bypassInterceptReason,
     isAccountBootstrapRequest,
     isChatRequestUrl,
+    isClientAbortError,
     isFetchAvailableModelsRequest,
     isFetchUserInfoRequest,
     isLoadCodeAssistRequest,

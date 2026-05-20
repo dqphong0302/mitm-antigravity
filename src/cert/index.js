@@ -10,6 +10,7 @@ const { execPowerShell, execPromise, execWithSudo, isWindowsElevated, powershell
 
 const MAC_SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain";
 const NODE_EXTRA_CA_CERTS = "NODE_EXTRA_CA_CERTS";
+const MAC_ANTIGRAVITY_PROCESS_PATTERN = "Antigravity( IDE| Tools)?\\.app/Contents/";
 
 function macLoginKeychain() {
   return path.join(os.homedir(), "Library", "Keychains", "login.keychain-db");
@@ -250,7 +251,7 @@ async function isAntigravityRunning() {
 
   if (!IS_MAC) return false;
   try {
-    const output = await execPromise("pgrep -f 'Antigravity.app/Contents/MacOS/Electron' 2>/dev/null || true");
+    const output = await execPromise(`pgrep -f ${shellQuote(MAC_ANTIGRAVITY_PROCESS_PATTERN)} 2>/dev/null || true`);
     return output.trim().length > 0;
   } catch {
     return false;
