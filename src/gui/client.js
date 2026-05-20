@@ -189,7 +189,7 @@ function guiClientScript() {
       $("mappingCount").textContent = t("mapping.count", { mapped: mappedCount, total: aliases.length });
 
       if (aliases.length === 0) {
-        $("mappingRows").innerHTML = "<tr><td colspan=\\"4\\">" + esc(t("mapping.noModels")) + "</td></tr>";
+        $("mappingRows").innerHTML = "<tr><td colspan=\\"5\\">" + esc(t("mapping.noModels")) + "</td></tr>";
         return;
       }
 
@@ -402,6 +402,7 @@ function guiClientScript() {
       if (result.dns && result.dns.added) parts.push(t("message.dnsActive"));
       if (result.cert && result.cert.installed) parts.push(t("message.certTrusted"));
       if (result.nodeTrust && result.nodeTrust.applied) parts.push(t("message.nodeTrustActive"));
+      else if (result.nodeTrust && result.nodeTrust.error) parts.push(t("message.nodeTrustFailed"));
       let restartText = "";
       if (result.nodeTrust && result.nodeTrust.antigravityRunning) restartText = " " + t("message.restartAntigravityRunning");
       else if (result.nodeTrust && result.nodeTrust.restartRequired) restartText = " " + t("message.restartAntigravity");
@@ -487,6 +488,7 @@ function guiClientScript() {
           result.cert && result.cert.installed ? t("message.certTrusted") : t("message.certAlreadyTrusted")
         ];
         if (result.nodeTrust && result.nodeTrust.applied) parts.push(t("message.nodeTrustActive"));
+        else if (result.nodeTrust && result.nodeTrust.error) parts.push(t("message.nodeTrustFailed"));
         if (result.proxy && result.proxy.reloaded) parts.push(t("message.proxyReloaded"));
         let restartText = "";
         if (result.nodeTrust && result.nodeTrust.antigravityRunning) restartText = " " + t("message.restartAntigravityRunning");
@@ -506,10 +508,12 @@ function guiClientScript() {
       try {
         const result = await api("/api/apply-app-trust", { method: "POST", body: elevatedBody() });
         const nodeTrust = result.nodeTrust || {};
-        let message = nodeTrust.supported === false ? t("message.nodeTrustNotSupported") : t("message.nodeTrustActive");
+        let message = nodeTrust.supported === false
+          ? t("message.nodeTrustNotSupported")
+          : (nodeTrust.applied ? t("message.nodeTrustActive") : t("message.nodeTrustFailed"));
         if (nodeTrust.antigravityRunning) message += ". " + t("message.restartAntigravityRunning");
         else if (nodeTrust.restartRequired) message += ". " + t("message.restartAntigravity");
-        showStatus("systemStatus", message, nodeTrust.supported === false ? "warn" : "ok");
+        showStatus("systemStatus", message, nodeTrust.applied ? "ok" : "warn");
         loadStatus();
       } catch (error) {
         showStatus("systemStatus", t("error.prefix", { message: error.message }), "err");

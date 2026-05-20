@@ -5,7 +5,7 @@ const {
   DEFAULT_REMOTE,
   IS_MAC,
   IS_WIN,
-  PRIMARY_ANTIGRAVITY_ALIASES,
+  MAPPABLE_ANTIGRAVITY_ALIASES,
 } = require("../config/constants");
 const {
   bundledSettingsPath,
@@ -66,6 +66,24 @@ const STATUS_CACHE_MS = IS_WIN ? 5000 : 1500;
 const AUTOSTART_CACHE_MS = IS_WIN ? 60000 : 10000;
 let statusCache = { at: 0, key: "", value: null };
 let autoStartCache = { at: 0, value: null };
+
+async function tryApplyAntigravityNodeTrust(certPath) {
+  try {
+    return await applyAntigravityNodeTrust(certPath);
+  } catch (error) {
+    appendLog("warn", "Antigravity Node trust apply failed", {
+      message: error && error.message ? error.message : String(error),
+    });
+    return {
+      supported: IS_MAC || IS_WIN,
+      applied: false,
+      changed: false,
+      restartRequired: false,
+      value: "",
+      error: error && error.message ? error.message : String(error),
+    };
+  }
+}
 
 function statusCacheKey(options, deep) {
   const cfg = readConfig();
@@ -185,7 +203,7 @@ async function handleBootstrap(res) {
     bundledSettingsPath: bundledSettingsPath(),
     legacyConfigPath: configPath(),
     machine: machineId(),
-    antigravityAliases: PRIMARY_ANTIGRAVITY_ALIASES,
+    antigravityAliases: MAPPABLE_ANTIGRAVITY_ALIASES,
     presets: guiPresets(),
     // Platform info cho GUI biết có cần hiện ô nhập sudo password không
     platform: {
@@ -272,7 +290,7 @@ async function handleStartProxy(req, res, options) {
       sudoPassword,
     });
   }
-  const nodeTrust = await applyAntigravityNodeTrust(cert.ca);
+  const nodeTrust = await tryApplyAntigravityNodeTrust(cert.ca);
   const port = Number(cfg.port || options.port || 443);
   const targetHost = primaryTargetHost(cfg);
   appendLog("info", "Proxy start requested", { port, targetHosts: targetHosts.length });
@@ -394,7 +412,7 @@ async function handleReloadProxy(req, res, options) {
 
   const cert = await generateCert(targetHosts, { force: false, sudoPassword });
   const certResult = await installCert(cert.ca, targetHosts[0], sudoPassword);
-  const nodeTrust = await applyAntigravityNodeTrust(cert.ca);
+  const nodeTrust = await tryApplyAntigravityNodeTrust(cert.ca);
   const result = await getProxyManager().reload({ config: cfg, sudoPassword });
   appendLog("info", "Proxy reloaded from UI", { port, targetHost, mode: result.mode });
   invalidateStatusCache();
@@ -407,7 +425,6 @@ async function handleApplyDns(req, res, options) {
   const targetHosts = targetHostsFrom(cfg);
   const sudoPassword = String(body.sudoPassword || "");
   const cert = await generateCert(targetHosts, { force: false, sudoPassword });
-  const nodeTrust = await applyAntigravityNodeTrust(cert.ca);
   const port = Number(cfg.port || options.port || 443);
   const targetHost = primaryTargetHost(cfg);
 
@@ -429,6 +446,7 @@ async function handleApplyDns(req, res, options) {
       sudoPassword,
     });
   }
+  const nodeTrust = await tryApplyAntigravityNodeTrust(cert.ca);
   let proxy = { reloaded: false, wasRunning: false, port };
   if (await checkProxyHealth(port, targetHost)) {
     proxy = {
@@ -446,7 +464,7 @@ async function handleApplyAppTrust(res) {
   const cfg = readConfig();
   const targetHosts = targetHostsFrom(cfg);
   const cert = await generateCert(targetHosts, { force: false });
-  const nodeTrust = await applyAntigravityNodeTrust(cert.ca);
+  const nodeTrust = await tryApplyAntigravityNodeTrust(cert.ca);
   invalidateStatusCache();
   sendJson(res, 200, { nodeTrust });
 }

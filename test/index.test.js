@@ -1069,7 +1069,7 @@ test("GUI client script is valid browser JavaScript", () => {
   assert.doesNotThrow(() => new vm.Script(guiClientScript()));
 });
 
-test("GUI and wizard expose the six primary mapping aliases", () => {
+test("wizard keeps primary aliases while GUI can expose all mappable aliases", () => {
   assert.deepEqual(mitm.PRIMARY_ANTIGRAVITY_ALIASES, [
     "gemini-3.1-pro-high",
     "gemini-3.1-pro-low",
@@ -1079,6 +1079,16 @@ test("GUI and wizard expose the six primary mapping aliases", () => {
     "gpt-oss-120b-medium",
   ]);
   assert.equal(mitm.MAPPABLE_ANTIGRAVITY_ALIASES.length > mitm.PRIMARY_ANTIGRAVITY_ALIASES.length, true);
+  for (const alias of [
+    "gemini-3-flash-agent",
+    "gemini-pro-agent",
+    "gemini-3-flash-a",
+    "gemini-3-flash-b",
+    "gemini-3-flash-c",
+    "gemini-3.5-flash-low",
+  ]) {
+    assert.equal(mitm.MAPPABLE_ANTIGRAVITY_ALIASES.includes(alias), true);
+  }
 });
 
 test("GUI route table finds known routes and rejects unknown routes", () => {

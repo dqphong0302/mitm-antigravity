@@ -185,7 +185,7 @@ function guiHtml() {
         <section class="tab-panel" data-panel="mapping">
           <section class="panel">
             <div class="panel-header">
-              <h2 class="panel-title"><span data-i18n="mapping.title">Built-in Model Mapping</span> <span class="tag neutral" id="mappingCount">0/6 mapped</span></h2>
+              <h2 class="panel-title"><span data-i18n="mapping.title">Built-in Model Mapping</span> <span class="tag neutral" id="mappingCount">0/0 mapped</span></h2>
               <p class="panel-subtitle" data-i18n="mapping.hint">Go to Endpoint API → Load, Test & Save to populate the model dropdown list.</p>
             </div>
             <div id="mappingReadiness" class="readiness-stack"></div>
@@ -207,7 +207,7 @@ function guiHtml() {
               <button id="saveMappingsBtn" type="button" data-i18n="mapping.saveReload">Save Mapping & Reload Proxy</button>
             </div>
             <div id="mappingStatus" class="status"></div>
-            <p class="panel-subtitle" data-i18n="mapping.note">Only these six built-in Antigravity models can be mapped. Unmapped models pass through to Google.</p>
+            <p class="panel-subtitle" data-i18n="mapping.note">All known mappable Antigravity models are shown here. Unmapped models pass through to Google.</p>
           </section>
         </section>
 
