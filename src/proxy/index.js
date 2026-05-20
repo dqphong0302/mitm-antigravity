@@ -508,6 +508,69 @@ function sanitizeKiroRequestBody(body) {
   return body;
 }
 
+function summarizePartTypes(parts) {
+  if (!Array.isArray(parts)) return [];
+  return parts.map((part) => {
+    if (!part || typeof part !== "object") return typeof part;
+    return Object.keys(part).sort().join("+") || "empty";
+  });
+}
+
+function summarizeAntigravityPayload(body) {
+  const requestBody = body && body.request && typeof body.request === "object" ? body.request : body;
+  const contents = Array.isArray(requestBody?.contents) ? requestBody.contents : [];
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const nestedMessages = Array.isArray(requestBody?.messages) ? requestBody.messages : [];
+  const tools = [
+    ...(Array.isArray(body?.tools) ? body.tools : []),
+    ...(Array.isArray(requestBody?.tools) ? requestBody.tools : []),
+  ];
+  let partCount = 0;
+  let textChars = 0;
+  const roleCounts = {};
+  const partTypeCounts = {};
+  const toolNames = [];
+  for (const turn of contents) {
+    if (turn && turn.role) {
+      const role = String(turn.role);
+      roleCounts[role] = (roleCounts[role] || 0) + 1;
+    }
+    const parts = Array.isArray(turn?.parts) ? turn.parts : [];
+    partCount += parts.length;
+    for (const type of summarizePartTypes(parts)) partTypeCounts[type] = (partTypeCounts[type] || 0) + 1;
+    for (const part of parts) {
+      if (part && typeof part.text === "string") textChars += part.text.length;
+    }
+  }
+  for (const tool of tools) {
+    if (!tool || typeof tool !== "object") continue;
+    if (Array.isArray(tool.functionDeclarations)) {
+      for (const decl of tool.functionDeclarations) {
+        if (decl && decl.name) toolNames.push(String(decl.name));
+      }
+    } else if (tool.function && tool.function.name) {
+      toolNames.push(String(tool.function.name));
+    }
+  }
+  const compactCounts = (counts) => Object.entries(counts)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}:${value}`)
+    .join("|") || "-";
+  return [
+    `contents=${contents.length}`,
+    `parts=${partCount}`,
+    `textChars=${textChars}`,
+    `messages=${messages.length}`,
+    `requestMessages=${nestedMessages.length}`,
+    `tools=${tools.length}`,
+    `roleCounts=${compactCounts(roleCounts)}`,
+    `partTypeCounts=${compactCounts(partTypeCounts)}`,
+    `toolNames=${toolNames.slice(0, 8).join(",") || "-"}`,
+    `topKeys=${Object.keys(body || {}).sort().join(",") || "-"}`,
+    `requestKeys=${Object.keys(requestBody || {}).sort().join(",") || "-"}`,
+  ].join(" ");
+}
+
 function thoughtPart(text) {
   if (!text || isInternalInstructionLeak(text)) return null;
   return { thought: true, text };
@@ -956,7 +1019,23 @@ async function runProxy(options) {
           body.model = "kr/claude-sonnet-4.5-thinking-agentic";
         }
       }
-      if (body.request && requestBody.contents && !body.userAgent) body.userAgent = "antigravity";
+      // Flatten nested body.request.* fields to top-level so 9router can find them.
+      // Antigravity sends { model, userAgent, request: { contents, systemInstruction, ... } }
+      // but 9router's Antigravity translator reads top-level contents/systemInstruction/tools.
+      // Without flattening, 9router sees messages=0 and produces empty responses.
+      if (body.request && typeof body.request === "object") {
+        const req_ = body.request;
+        if (Array.isArray(req_.contents)       && !body.contents)          body.contents          = req_.contents;
+        if (req_.systemInstruction             && !body.systemInstruction)  body.systemInstruction = req_.systemInstruction;
+        if (req_.generationConfig              && !body.generationConfig)   body.generationConfig  = req_.generationConfig;
+        if (Array.isArray(req_.tools)          && !body.tools)              body.tools             = req_.tools;
+        if (req_.toolConfig                    && !body.toolConfig)         body.toolConfig        = req_.toolConfig;
+        // Keep body.request intact — some 9router versions still read it
+      }
+
+      // Inject userAgent for both nested and flat body formats.
+      const hasContents = Array.isArray(body.contents) && body.contents.length > 0;
+      if (hasContents && !body.userAgent) body.userAgent = "antigravity";
       if (String(req.url || "").includes(":streamGenerateContent")) body.stream = true;
 
       // ─── Thinking / Reasoning passthrough ───────────────────────────────────
@@ -1055,8 +1134,20 @@ async function runProxy(options) {
         method: "POST",
         targetHost: routerUrl.host,
         requestPath: routerUrl.pathname,
-        extra: `model=${targetModel} stream=${body.stream === true}`,
+        extra: `model=${targetModel} stream=${body.stream === true} ${summarizeAntigravityPayload(body)}`,
       });
+      try {
+        fs.appendFileSync(
+          "/tmp/mitm-antigravity-upstream-summary.log",
+          `${new Date().toISOString()} model=${targetModel} ${summarizeAntigravityPayload(body)}\n`,
+        );
+        // Debug: dump full body (truncated) to inspect what 9router receives
+        const debugBody = JSON.stringify(body);
+        fs.appendFileSync(
+          "/tmp/mitm-antigravity-upstream-body.log",
+          `${new Date().toISOString()} model=${targetModel} body=${debugBody.slice(0, 2000)}\n---\n`,
+        );
+      } catch (_) { /* debug summary is best effort */ }
 
       const startTime = Date.now();
 
@@ -1067,8 +1158,13 @@ async function runProxy(options) {
         ? Math.max(0, Number(options.requestTimeoutMs))
         : 10 * 60 * 1000;
       const controller = requestTimeoutMs > 0 ? new AbortController() : null;
+      // Only abort upstream if we haven't started receiving data yet.
+      // Once 9router begins streaming, we must let it finish — aborting mid-stream
+      // causes Antigravity to see a truncated response and retry indefinitely.
+      let upstreamStarted = false;
       const abortUpstream = () => {
         if (res.writableEnded) return;
+        if (upstreamStarted) return; // already streaming — don't abort
         if (controller && !controller.signal.aborted) {
           controller.abort(new Error("client disconnected before upstream completed"));
         }
@@ -1097,6 +1193,9 @@ async function runProxy(options) {
           requestPath: routerUrl.pathname,
           extra: `headers content-type=${response.headers.get("content-type") || "-"}`,
         });
+
+        // Mark upstream as started — from here on, don't abort even if client closes.
+        upstreamStarted = true;
 
         if (!response.ok) {
           const errText = await sendUpstreamErrorResponse(res, response);
@@ -1139,6 +1238,12 @@ async function runProxy(options) {
         res.off("close", abortUpstream);
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         logProxyOk({ model: targetModel, reasoning: body.reasoning_effort || "", elapsedSeconds: elapsed });
+        try {
+          fs.appendFileSync(
+            "/tmp/mitm-antigravity-upstream-summary.log",
+            `${new Date().toISOString()} OK model=${targetModel} elapsed=${elapsed}s writableEnded=${res.writableEnded} destroyed=${res.destroyed}\n`,
+          );
+        } catch (_) { /* best effort */ }
       } finally {
         if (timeoutId) clearTimeout(timeoutId);
       }
