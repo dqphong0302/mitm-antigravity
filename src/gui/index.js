@@ -5,7 +5,7 @@ const {
   DEFAULT_REMOTE,
   IS_MAC,
   IS_WIN,
-  MAPPABLE_ANTIGRAVITY_ALIASES,
+  PRIMARY_ANTIGRAVITY_ALIASES,
 } = require("../config/constants");
 const {
   bundledSettingsPath,
@@ -203,7 +203,7 @@ async function handleBootstrap(res) {
     bundledSettingsPath: bundledSettingsPath(),
     legacyConfigPath: configPath(),
     machine: machineId(),
-    antigravityAliases: MAPPABLE_ANTIGRAVITY_ALIASES,
+    antigravityAliases: PRIMARY_ANTIGRAVITY_ALIASES,
     presets: guiPresets(),
     // Platform info cho GUI biết có cần hiện ô nhập sudo password không
     platform: {

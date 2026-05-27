@@ -67,20 +67,13 @@ const ANTIGRAVITY_ALIASES = [
   "gemini-pro-agent",
 ];
 const PRIMARY_ANTIGRAVITY_ALIASES = [
-  // Antigravity 2.0 defaults first
-  "gemini-3.5-flash",
-  "gemini-3.5-flash-thinking",
-  "gemini-3.5-pro",
-  // 3.1 tier
+  // Main Antigravity models shown in GUI mapping table.
+  // Keep this short; advanced aliases still work through config/import/CLI.
   "gemini-3.1-pro-high",
   "gemini-3.1-pro-low",
-  "gemini-3-flash",
-  // Claude
-  "claude-sonnet-4",
+  "gemini-3-flash-agent",
   "claude-sonnet-4-6",
-  "claude-opus-4-thinking",
   "claude-opus-4-6-thinking",
-  // GPT
   "gpt-oss-120b-medium",
 ];
 const MAPPABLE_ANTIGRAVITY_ALIASES = [...ANTIGRAVITY_ALIASES];
