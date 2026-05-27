@@ -16,16 +16,24 @@ function macLoginKeychain() {
   return path.join(os.homedir(), "Library", "Keychains", "login.keychain-db");
 }
 
-function macSystemTrustCommand(certPath) {
+function macTrustCommand(certPath, keychainPath, { admin = false } = {}) {
   return [
     "security add-trusted-cert",
-    "-d",
+    admin ? "-d" : "",
     "-r trustRoot",
     "-p ssl",
     "-p basic",
-    `-k ${shellQuote(MAC_SYSTEM_KEYCHAIN)}`,
+    `-k ${shellQuote(keychainPath)}`,
     shellQuote(certPath),
-  ].join(" ");
+  ].filter(Boolean).join(" ");
+}
+
+function macSystemTrustCommand(certPath) {
+  return macTrustCommand(certPath, MAC_SYSTEM_KEYCHAIN, { admin: true });
+}
+
+function macLoginTrustCommand(certPath) {
+  return macTrustCommand(certPath, macLoginKeychain(), { admin: false });
 }
 
 function macCertTrustVerifyCommand(serverCertPath, targetHost = DEFAULT_TARGET) {
@@ -466,13 +474,31 @@ async function installCert(certPath, targetHost, sudoPassword) {
       await execWithSudo(systemCommand, sudoPassword);
       return { installed: true, keychain: "system", trustPolicies: ["ssl", "basic"] };
     } catch (systemError) {
-      throw new Error(
-        [
-          "Failed to trust the certificate in the macOS System keychain.",
-          "Run from the GUI and approve the administrator prompt, or run the CLI with --password.",
-          `System keychain error: ${systemError.message}`,
-        ].join("\n")
-      );
+      // Some packaged GUI contexts (LaunchServices / elevated relaunch / no TTY)
+      // cannot display the administrator prompt, yielding:
+      //   SecTrustSettingsSetTrustSettings: authorization denied since no user interaction was possible
+      // Fallback to the user's login keychain. Antigravity and Node run in the
+      // user session, so this still fixes TLS trust for the app without admin UI.
+      try {
+        await execPromise(macLoginTrustCommand(certPath));
+        return {
+          installed: true,
+          keychain: "login",
+          fallbackFromSystem: true,
+          trustPolicies: ["ssl", "basic"],
+          systemKeychainError: systemError.message,
+        };
+      } catch (loginError) {
+        throw new Error(
+          [
+            "Failed to trust the certificate in macOS keychains.",
+            "System keychain could not show an administrator prompt; login keychain fallback also failed.",
+            "Open MITM AG normally (not from a headless shell), approve the admin prompt, or run CLI with --password.",
+            `System keychain error: ${systemError.message}`,
+            `Login keychain error: ${loginError.message}`,
+          ].join("\n")
+        );
+      }
     }
   }
 
@@ -526,6 +552,7 @@ module.exports = {
   installCert,
   isAntigravityRunning,
   macCertTrustVerifyCommand,
+  macLoginTrustCommand,
   macSystemTrustCommand,
   uninstallCert,
   windowsBatchInstallCertAndHosts,
