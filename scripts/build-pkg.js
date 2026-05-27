@@ -91,7 +91,13 @@ function buildOne(childTarget) {
   if (!pkgTarget || !outputName) throw new Error(`Unknown target: ${childTarget}`);
 
   const outputPath = path.join(distDir, outputName);
-  const genericOutputPath = path.join(distDir, process.platform === "win32" ? "mitm-antigravity.exe" : "mitm-antigravity");
+  // @yao-pkg writes the generic binary using the *target* platform extension,
+  // not the host platform. Cross-building win-x64 on macOS therefore produces
+  // dist/mitm-antigravity.exe, not dist/mitm-antigravity.
+  const genericOutputPaths = [
+    path.join(distDir, "mitm-antigravity"),
+    path.join(distDir, "mitm-antigravity.exe"),
+  ];
   fs.mkdirSync(distDir, { recursive: true });
 
   if (outputFresh(outputPath)) {
@@ -99,7 +105,7 @@ function buildOne(childTarget) {
     return;
   }
 
-  fs.rmSync(genericOutputPath, { force: true });
+  for (const genericOutputPath of genericOutputPaths) fs.rmSync(genericOutputPath, { force: true });
   fs.rmSync(outputPath, { force: true });
 
   const started = Date.now();
@@ -119,8 +125,9 @@ function buildOne(childTarget) {
     // pkg may exit non-zero on some platforms even when output is produced.
   }
 
-  if (!fs.existsSync(outputPath) && fs.existsSync(genericOutputPath)) {
-    fs.renameSync(genericOutputPath, outputPath);
+  if (!fs.existsSync(outputPath)) {
+    const producedGeneric = genericOutputPaths.find((genericOutputPath) => fs.existsSync(genericOutputPath));
+    if (producedGeneric) fs.renameSync(producedGeneric, outputPath);
   }
 
   if (!fs.existsSync(outputPath)) {

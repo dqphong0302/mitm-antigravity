@@ -118,7 +118,12 @@ fn old_app_instance_pids() -> Vec<u32> {
                 return None;
             }
             let is_mitm_app = command.contains("MITM AG.app/Contents/MacOS/")
-                || command.contains("MITM Antigravity.app/Contents/MacOS/");
+                || command.contains("MITM Antigravity.app/Contents/MacOS/")
+                || command.contains("mitm-ag-tauri")
+                || command.contains("mitm-antigravity gui")
+                || command.contains("mitm-antigravity-macos")
+                || command.contains("mitm-ag-backend gui")
+                || command.contains("src-tauri/resources/mitm-ag-backend gui");
             is_mitm_app.then_some(pid)
         })
         .collect::<BTreeSet<_>>()
@@ -134,24 +139,29 @@ fn old_app_instance_pids() -> Vec<u32> {
          Get-CimInstance Win32_Process | \
          Where-Object {{ $_.ProcessId -ne $current -and ( \
            $_.Name -eq 'MITM AG.exe' -or \
+           $_.Name -eq 'MITM Antigravity.exe' -or \
            $_.Name -eq 'mitm-ag-tauri.exe' -or \
+           $_.Name -eq 'mitm-antigravity-win-x64.exe' -or \
+           $_.Name -eq 'mitm-antigravity-win-arm64.exe' -or \
            ($_.ExecutablePath -like '*\\MITM AG.exe') -or \
+           ($_.ExecutablePath -like '*\\MITM Antigravity.exe') -or \
            ($_.CommandLine -like '*MITM AG.exe*') -or \
-           ($_.CommandLine -like '*mitm-ag-tauri.exe*') \
+           ($_.CommandLine -like '*MITM Antigravity.exe*') -or \
+           ($_.CommandLine -like '*mitm-ag-tauri.exe*') -or \
+           ($_.CommandLine -like '*mitm-ag-backend.exe gui*') -or \
+           ($_.CommandLine -like '*mitm-antigravity-win-x64.exe gui*') -or \
+           ($_.CommandLine -like '*mitm-antigravity-win-arm64.exe gui*') \
          ) }} | Select-Object -ExpandProperty ProcessId"
     );
     let mut command = Command::new("powershell");
-    let Ok(output) = hide_command_window(
-        command.args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ]),
-    )
-    .output()
-    else {
+    let Ok(output) = hide_command_window(command.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &script,
+    ]))
+    .output() else {
         return Vec::new();
     };
 
@@ -299,9 +309,7 @@ fn gui_port_owner_pids() -> Vec<u32> {
 #[cfg(windows)]
 fn gui_port_owner_pids() -> Vec<u32> {
     let mut command = Command::new("netstat");
-    let Ok(output) = hide_command_window(command.args(["-ano", "-p", "tcp"]))
-        .output()
-    else {
+    let Ok(output) = hide_command_window(command.args(["-ano", "-p", "tcp"])).output() else {
         return Vec::new();
     };
 
