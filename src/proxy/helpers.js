@@ -26,6 +26,16 @@ const ACCOUNT_BOOTSTRAP_URL_PATTERNS = [
     ":onboardUser",
     ":recordTrajectoryAnalytics",
     "/agentPlugins",
+    // Antigravity 2.0 / agy CLI new endpoints
+    ":listAgentPlugins",
+    ":fetchProjectSettings",
+    ":fetchUserSettings",
+    ":updateUserSettings",
+    ":fetchWorkspaceSettings",
+    ":listExtensions",
+    ":fetchExtensionConfig",
+    ":recordEvent",
+    ":batchRecordEvents",
 ];
 const ACCOUNT_QUOTA_URL_PATTERNS = [
     ":retrieveUserQuota",
@@ -37,6 +47,28 @@ const ACCOUNT_ENTITLEMENT_URL_PATTERNS = [
     ":getEntitlements",
     ":getUserEntitlements",
 ];
+const OAUTH_PASSTHROUGH_URL_PATTERNS = [
+    "/o/oauth2/",
+    "/oauth2/",
+    "/oauth-callback",
+    "/signin/oauth",
+    "/signin/",
+    "/token",
+    "/revoke",
+    "/userinfo",
+    // agy 2.0 PKCE callback — localhost:36742/oauth-callback
+    "/oauth2callback",
+    "/device/code",
+];
+const OAUTH_PASSTHROUGH_HOSTS = new Set([
+    "accounts.google.com",
+    "oauth2.googleapis.com",
+    "www.googleapis.com",
+]);
+// agy 2.0 uses a fixed loopback callback port for PKCE; treat it as loopback
+const AGY_OAUTH_CALLBACK_PORT = 36742;
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
 const ACCOUNT_PASSTHROUGH_URL_PATTERNS = [
     ...ACCOUNT_BOOTSTRAP_URL_PATTERNS,
     ...ACCOUNT_QUOTA_URL_PATTERNS,
@@ -72,6 +104,35 @@ function isAccountBootstrapRequest(reqUrl) {
     return urlIncludesAny(reqUrl, ACCOUNT_PASSTHROUGH_URL_PATTERNS);
 }
 
+function normalizeHost(host) {
+    const value = String(host || "").trim().toLowerCase();
+    const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(value);
+    if (bracketed) return bracketed[1];
+    if (value === "::1") return value;
+    const colonCount = (value.match(/:/g) || []).length;
+    if (colonCount > 1) return value;
+    return value.split(":")[0];
+}
+
+function isLoopbackHost(host) {
+    const normalized = normalizeHost(host);
+    return LOOPBACK_HOSTS.has(normalized) || normalized.endsWith(".localhost");
+}
+
+function isOAuthPassthroughRequest(req) {
+    const rawHost = req && req.headers ? req.headers.host : "";
+    const host = normalizeHost(rawHost);
+    const url = String((req && req.url) || "");
+    if (isLoopbackHost(host)) return true;
+    // agy 2.0 PKCE callback on localhost:36742
+    if (/:\d+$/.test(String(rawHost || ""))) {
+        const port = Number(String(rawHost).split(":").pop());
+        if (port === AGY_OAUTH_CALLBACK_PORT) return true;
+    }
+    if (OAUTH_PASSTHROUGH_HOSTS.has(host) && urlIncludesAny(url, OAUTH_PASSTHROUGH_URL_PATTERNS)) return true;
+    return false;
+}
+
 function buildRouterHeaders(clientHeaders, apiKey) {
     const headers = { "Content-Type": "application/json" };
     for (const [key, value] of Object.entries(clientHeaders || {})) {
@@ -90,6 +151,7 @@ function shouldBypassIntercept(req) {
 function bypassInterceptReason(req) {
     const compatibilitySource = String(req.headers["x-9router-source"] || "").toLowerCase();
     if (compatibilitySource === "9router") return "x-9router-source=9router";
+    if (isOAuthPassthroughRequest(req)) return "oauth_or_loopback_passthrough";
     return "";
 }
 
@@ -264,6 +326,7 @@ async function retryWithBackoff(fetchFn, options) {
 }
 
 module.exports = {
+    AGY_OAUTH_CALLBACK_PORT,
     buildRouterHeaders,
     bypassInterceptReason,
     isAccountBootstrapRequest,
@@ -271,6 +334,8 @@ module.exports = {
     isClientAbortError,
     isFetchAvailableModelsRequest,
     isFetchUserInfoRequest,
+    isLoopbackHost,
+    isOAuthPassthroughRequest,
     isLoadCodeAssistRequest,
     isModelBootstrapMergeRequest,
     isRetryableUpstreamStatus,

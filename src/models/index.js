@@ -12,28 +12,53 @@ const {
 const ANTIGRAVITY_ALIAS_SET = new Set(ANTIGRAVITY_ALIASES);
 const MAPPABLE_ALIAS_SET = new Set(MAPPABLE_ANTIGRAVITY_ALIASES);
 const BUILTIN_MODEL_VALUE_ALIASES = new Map([
+  // ── Gemini 3.1 placeholders ───────────────────────────────────────────────
   ["MODEL_PLACEHOLDER_M37", "gemini-3.1-pro-high"],
   ["MODEL_PLACEHOLDER_M36", "gemini-3.1-pro-low"],
   ["MODEL_PLACEHOLDER_M50", "gemini-3.1-flash-lite"],
   ["MODEL_PLACEHOLDER_M21", "gemini-3.1-flash-image"],
   ["MODEL_PLACEHOLDER_M18", "gemini-3-flash"],
   ["MODEL_PLACEHOLDER_M84", "gemini-3-flash-agent"],
+  // ── Claude placeholders ───────────────────────────────────────────────────
   ["MODEL_PLACEHOLDER_M35", "claude-sonnet-4-6"],
   ["MODEL_PLACEHOLDER_M26", "claude-opus-4-6-thinking"],
   ["291", "claude-opus-4-6-thinking"],
+  // ── Gemini 2.5 named constants ────────────────────────────────────────────
   ["MODEL_GOOGLE_GEMINI_2_5_PRO", "gemini-2.5-pro"],
   ["MODEL_GOOGLE_GEMINI_2_5_FLASH", "gemini-2.5-flash"],
   ["MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING", "gemini-2.5-flash-thinking"],
   ["MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE", "gemini-2.5-flash-lite"],
+  // ── GPT OSS ───────────────────────────────────────────────────────────────
   ["MODEL_OPENAI_GPT_OSS_120B_MEDIUM", "gpt-oss-120b-medium"],
   ["342", "gpt-oss-120b-medium"],
+  // ── Tab / preview ─────────────────────────────────────────────────────────
   ["MODEL_PLACEHOLDER_M19", "tab_flash_lite_preview"],
   ["MODEL_PLACEHOLDER_M28", "tab_jump_flash_lite_preview"],
+  // ── Gemini 3.5 placeholders (Antigravity 2.0) ─────────────────────────────
+  ["MODEL_GOOGLE_GEMINI_3_5_FLASH", "gemini-3.5-flash"],
+  ["MODEL_GOOGLE_GEMINI_3_5_FLASH_THINKING", "gemini-3.5-flash-thinking"],
+  ["MODEL_GOOGLE_GEMINI_3_5_FLASH_LOW", "gemini-3.5-flash-low"],
+  ["MODEL_GOOGLE_GEMINI_3_5_PRO", "gemini-3.5-pro"],
+  ["MODEL_GOOGLE_GEMINI_3_5_PRO_THINKING", "gemini-3.5-pro-thinking"],
+  // Numeric IDs seen in agy 2.0 traffic (may expand as more are observed)
+  ["400", "gemini-3.5-flash"],
+  ["401", "gemini-3.5-flash-thinking"],
+  ["402", "gemini-3.5-pro"],
+  // ── Claude 4 short aliases (Antigravity 2.0) ──────────────────────────────
+  ["MODEL_ANTHROPIC_CLAUDE_SONNET_4", "claude-sonnet-4"],
+  ["MODEL_ANTHROPIC_CLAUDE_OPUS_4", "claude-opus-4"],
+  ["MODEL_ANTHROPIC_CLAUDE_OPUS_4_THINKING", "claude-opus-4-thinking"],
+  // ── Canonical name aliases ────────────────────────────────────────────────
   ["gemini-3.1-pro", "gemini-3.1-pro-high"],
   ["gemini-3.1-pro-preview", "gemini-3.1-pro-high"],
   ["gh/gemini-3.1-pro-preview", "gemini-3.1-pro-high"],
   ["gemini-pro-agent", "gemini-3.1-pro-high"],
   ["gemini-3-flash-agent", "gemini-3-flash"],
+  // Antigravity 2.0 may send "gemini-3.5-flash" as the bare default
+  ["gemini-3.5", "gemini-3.5-flash"],
+  // Claude 4 short → versioned
+  ["claude-sonnet-4", "claude-sonnet-4"],
+  ["claude-opus-4", "claude-opus-4"],
 ]);
 
 const MODEL_FIELD_NAMES = new Set([
@@ -318,6 +343,50 @@ function builtInAliasForModel(model) {
   return "";
 }
 
+/**
+ * Parse a minimal subset of TOML: only top-level key = "value" string pairs.
+ * Sufficient for reading antigravity config.toml model mapping fields.
+ * Does NOT handle tables, arrays, multi-line strings, or numbers.
+ */
+function parseTomlStringPairs(text) {
+  const result = {};
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("[")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const rawVal = trimmed.slice(eq + 1).trim();
+    // Only handle quoted strings
+    const quoted = /^"((?:[^"\\]|\\.)*)"/.exec(rawVal);
+    if (quoted) {
+      result[key] = quoted[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    }
+  }
+  return result;
+}
+
+/**
+ * Read agy 2.0 model aliases from ~/.config/antigravity/config.toml.
+ * The file may contain entries like:
+ *   [model_aliases]
+ *   "gemini-3.5-flash" = "kr/claude-sonnet-4.6-agentic"
+ * We do a best-effort parse — failures are silently ignored.
+ */
+function readAgyConfigAliases() {
+  try {
+    const tomlPath = path.join(os.homedir(), ".config", "antigravity", "config.toml");
+    if (!fs.existsSync(tomlPath)) return {};
+    const text = fs.readFileSync(tomlPath, "utf-8");
+    // Find [model_aliases] section and parse until next section
+    const sectionMatch = /\[model_aliases\]([\s\S]*?)(?=\n\[|$)/.exec(text);
+    if (!sectionMatch) return {};
+    return parseTomlStringPairs(sectionMatch[1]);
+  } catch {
+    return {};
+  }
+}
+
 function getMappedEntry(model, options) {
   if (!model) return null;
   if (options.model) return { model: options.model };
@@ -339,6 +408,7 @@ function getMappedEntry(model, options) {
     if (prefixKey) return normalizeMappingEntry(options.modelMap[prefixKey]);
   }
 
+  // ~/.9router/db.json — 9router desktop app config
   try {
     const dbFile = path.join(os.homedir(), ".9router", "db.json");
     const db = JSON.parse(fs.readFileSync(dbFile, "utf-8"));
@@ -346,10 +416,25 @@ function getMappedEntry(model, options) {
     for (const candidate of candidates) {
       if (MAPPABLE_ALIAS_SET.has(candidate) && aliases[candidate]) return normalizeMappingEntry(aliases[candidate]);
     }
-    return null;
   } catch {
-    return null;
+    // not available — fall through
   }
+
+  // ~/.config/antigravity/config.toml — agy 2.0 CLI config
+  try {
+    const agyAliases = readAgyConfigAliases();
+    for (const candidate of candidates) {
+      if (agyAliases[candidate]) return normalizeMappingEntry(agyAliases[candidate]);
+    }
+    // Also try bare model name (agy may send full IDs not in MAPPABLE_ALIAS_SET)
+    for (const candidate of candidates) {
+      if (agyAliases[candidate]) return normalizeMappingEntry(agyAliases[candidate]);
+    }
+  } catch {
+    // best effort
+  }
+
+  return null;
 }
 
 function getMappedModel(model, options) {
@@ -406,6 +491,8 @@ module.exports = {
   normalizePrefix,
   parseInlineModelMap,
   parseJsonBody,
+  parseTomlStringPairs,
+  readAgyConfigAliases,
   sendAntigravityModelList,
   stripLegacyDefaultMappings,
   summarizeAntigravityModelsResponse,

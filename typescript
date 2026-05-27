@@ -1,0 +1,29 @@
+Script started on Mon May  4 00:14:42 2026
+[1m[7m%[27m[1m[0m                                                                                                                              [0m[27m[24m[J(base) phongdang@Phongs-MB-Air mitm-antigravity % [K[?2004hccd scripts[1m/[0m[0m [?2004l
+[1m[7m%[27m[1m[0m                                                                                                                              [0m[27m[24m[J(base) phongdang@Phongs-MB-Air scripts % [K[?2004hlls[?2004l
+build-pkg.js			kill-mitm-ag.command		prepare-tauri.js
+copy-settings.js		kill-mitm-ag.sh			restart-macos-proxy.sh
+kill-mitm-ag-backend.bat	kill-windows-proxy.cmd		settings-sanitizer.js
+kill-mitm-ag.bat		kill-windows-proxy.ps1		tauri-build-windows.js
+[1m[7m%[27m[1m[0m                                                                                                                              [0m[27m[24m[J(base) phongdang@Phongs-MB-Air scripts % [K[?2004hkkill
+[Jkill     kill.d   killall[A[0m[27m[24m[41Ckill[K-mi
+[J[A[48C     k  lls[?2004l
+[Jbuild-pkg.js			kill-mitm-ag.command		prepare-tauri.js
+copy-settings.js		kill-mitm-ag.sh			restart-macos-proxy.sh
+kill-mitm-ag-backend.bat	kill-windows-proxy.cmd		settings-sanitizer.js
+kill-mitm-ag.bat		kill-windows-proxy.ps1		tauri-build-windows.js
+[1m[7m%[27m[1m[0m                                                                                                                              [0m[27m[24m[J(base) phongdang@Phongs-MB-Air scripts % [K[?2004hkk=k  ../kill-mitm-ag.sh[1m [0m[0m [?2004l
+zsh: permission denied: ./kill-mitm-ag.sh
+[1m[7m%[27m[1m[0m                                                                                                                              [0m[27m[24m[J(base) phongdang@Phongs-MB-Air scripts % [K[?2004hssudi  o ./kill-mitm-ag.shs./kill-mitm-ag.sh[17Dsu./kill-mitm-ag.sh[17Dd./kill-mitm-ag.sh[17Do./kill-mitm-ag.sh[17D ./kill-mitm-ag.sh[17D[?2004l
+Password:
+sudo: ./kill-mitm-ag.sh: command not found
+[1m[7m%[27m[1m[0m                                                                                                                              [0m[27m[24m[J(base) phongdang@Phongs-MB-Air scripts % [K[?2004hsudo ./kill-mitm-ag.sh[22D[5P[17C     [17Dsudo ./kill-mitm-ag.sh[22D                      [22Dsudo ./kill-mitm-ag.sh[?2004l
+Password:
+Sorry, try again.
+Password:
+Sorry, try again.
+Password:
+Stopping MITM AG backend and UI processes...
+Checking privileged listener on port 443...
+Done.
+[1m[7m%[27m[1m[0m                                                                                                                              [0m[27m[24m[J(base) phongdang@Phongs-MB-Air scripts % [K[?2004h

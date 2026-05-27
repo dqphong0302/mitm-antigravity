@@ -14,24 +14,41 @@ function models() {
 
 function modelDisplayName(alias, mappedModel) {
     const names = {
+        // ── Gemini 2.5 (legacy) ──────────────────────────────────────────────
         "gemini-2.5-pro": "Gemini 2.5 Pro",
         "gemini-2.5-flash": "Gemini 2.5 Flash",
         "gemini-2.5-flash-thinking": "Gemini 2.5 Flash Thinking",
         "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
-        "gemini-3.1-pro-high": "Gemini 3.1 Pro High",
-        "gemini-3.1-pro-low": "Gemini 3.1 Pro Low",
-        "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
-        "gemini-3.1-flash-image": "Gemini 3.1 Flash Image",
+        // ── Gemini 3 Flash ───────────────────────────────────────────────────
         "gemini-3-flash": "Gemini 3 Flash",
         "gemini-3-flash-agent": "Gemini 3 Flash Agent",
         "gemini-3-flash-a": "Gemini 3 Flash A",
         "gemini-3-flash-b": "Gemini 3 Flash B",
         "gemini-3-flash-c": "Gemini 3 Flash C",
-        "claude-sonnet-4-6": "Claude Sonnet 4.6",
-        "claude-opus-4-6-thinking": "Claude Opus 4.6 Thinking",
-        "gpt-oss-120b-medium": "GPT OSS 120B Medium",
+        // ── Gemini 3 Pro ─────────────────────────────────────────────────────
         "gemini-3-pro-high": "Gemini 3 Pro High",
         "gemini-3-pro-low": "Gemini 3 Pro Low",
+        // ── Gemini 3.1 ───────────────────────────────────────────────────────
+        "gemini-3.1-pro-high": "Gemini 3.1 Pro High",
+        "gemini-3.1-pro-low": "Gemini 3.1 Pro Low",
+        "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+        "gemini-3.1-flash-image": "Gemini 3.1 Flash Image",
+        // ── Gemini 3.5 (Antigravity 2.0 default) ─────────────────────────────
+        "gemini-3.5-flash": "Gemini 3.5 Flash",
+        "gemini-3.5-flash-thinking": "Gemini 3.5 Flash Thinking",
+        "gemini-3.5-flash-low": "Gemini 3.5 Flash Low",
+        "gemini-3.5-pro": "Gemini 3.5 Pro",
+        "gemini-3.5-pro-thinking": "Gemini 3.5 Pro Thinking",
+        // ── Claude 4.6 (versioned) ────────────────────────────────────────────
+        "claude-sonnet-4-6": "Claude Sonnet 4.6",
+        "claude-opus-4-6-thinking": "Claude Opus 4.6 Thinking",
+        // ── Claude 4 short aliases (Antigravity 2.0) ──────────────────────────
+        "claude-sonnet-4": "Claude Sonnet 4",
+        "claude-opus-4": "Claude Opus 4",
+        "claude-opus-4-thinking": "Claude Opus 4 Thinking",
+        // ── GPT / OSS ────────────────────────────────────────────────────────
+        "gpt-oss-120b-medium": "GPT OSS 120B Medium",
+        // ── Tab / preview ─────────────────────────────────────────────────────
         "tab_flash_lite_preview": "Tab Flash Lite Preview",
         "tab_jump_flash_lite_preview": "Tab Jump Flash Lite Preview",
     };

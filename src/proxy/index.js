@@ -1,12 +1,14 @@
 const dns = require("dns");
 const https = require("https");
 const fs = require("fs");
+const crypto = require("crypto");
 const { promisify } = require("util");
 
 const { APP_NAME } = require("../config/constants");
 const { certPaths } = require("../cert");
 const { primaryTargetHost, targetHostsFrom } = require("../config");
 const { collectBodyRaw, sendJson } = require("../system/http");
+const { redact } = require("../system/logging");
 const {
   extractModelFromBody,
   extractModelFromUrl,
@@ -19,6 +21,7 @@ const {
   bypassInterceptReason,
   isAccountBootstrapRequest,
   isChatRequestUrl,
+  isLoopbackHost,
   isModelBootstrapMergeRequest,
   logChatPassthrough,
   logPassthroughResponse,
@@ -42,6 +45,9 @@ const MAX_REQUEST_BODY_BYTES = 96 * MB;
 const MAX_RESPONSE_BODY_BYTES = 192 * MB;
 const MAX_SSE_BUFFER_BYTES = 6 * MB;
 const MAX_PASSTHROUGH_BUFFER_BYTES = 48 * MB;
+const RECENT_REQUEST_LOG_PATH = process.env.MITM_RECENT_REQUEST_LOG || "/tmp/mitm-antigravity-recent-requests.json";
+const RECENT_REQUEST_LOG_LIMIT = Math.max(1, Number(process.env.MITM_RECENT_REQUEST_LOG_LIMIT || 10));
+const RECENT_REQUEST_BODY_PREVIEW_BYTES = Math.max(0, Number(process.env.MITM_RECENT_REQUEST_BODY_PREVIEW_BYTES || 20000));
 
 function bytesLabel(bytes) {
   return `${(bytes / MB).toFixed(1)}MB`;
@@ -59,6 +65,39 @@ function ensureBufferLimit(totalBytes, maxBytes, label) {
   if (maxBytes > 0 && totalBytes > maxBytes) {
     throw new ProxyMemoryLimitError(`${label} exceeds ${bytesLabel(maxBytes)}`);
   }
+}
+
+function safeJsonParse(text, fallback) {
+  try {
+    return JSON.parse(String(text || ""));
+  } catch {
+    return fallback;
+  }
+}
+
+function previewJson(value, maxBytes = RECENT_REQUEST_BODY_PREVIEW_BYTES) {
+  if (maxBytes <= 0) return undefined;
+  let text;
+  try {
+    text = JSON.stringify(redact(value));
+  } catch {
+    text = "[unserializable]";
+  }
+  const buffer = Buffer.from(text);
+  if (buffer.length <= maxBytes) return { truncated: false, bytes: buffer.length, json: text };
+  return {
+    truncated: true,
+    bytes: buffer.length,
+    json: buffer.subarray(0, maxBytes).toString("utf8"),
+  };
+}
+
+function appendRecentRequestLog(entry, filePath = RECENT_REQUEST_LOG_PATH, limit = RECENT_REQUEST_LOG_LIMIT) {
+  const existing = safeJsonParse(fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "[]", []);
+  const entries = Array.isArray(existing) ? existing : [];
+  entries.push(entry);
+  const kept = entries.slice(-Math.max(1, Number(limit) || 10));
+  fs.writeFileSync(filePath, `${JSON.stringify(kept, null, 2)}\n`, "utf8");
 }
 
 // ─── Responses API helpers (for GPT / Responses API models) ────────────────
@@ -516,6 +555,30 @@ function summarizePartTypes(parts) {
   });
 }
 
+function syntheticThoughtSignatureForFunctionCall(part) {
+  const name = part && part.functionCall && part.functionCall.name ? String(part.functionCall.name) : "functionCall";
+  const args = part && part.functionCall && part.functionCall.args ? JSON.stringify(part.functionCall.args) : "";
+  return crypto
+    .createHash("sha256")
+    .update(`mitm-antigravity:${name}:${args}`)
+    .digest("base64");
+}
+
+function ensureFunctionCallThoughtSignaturesInContents(contents) {
+  if (!Array.isArray(contents)) return 0;
+  let added = 0;
+  for (const turn of contents) {
+    if (!turn || !Array.isArray(turn.parts)) continue;
+    for (const part of turn.parts) {
+      if (!part || typeof part !== "object") continue;
+      if (!part.functionCall || part.thoughtSignature) continue;
+      part.thoughtSignature = syntheticThoughtSignatureForFunctionCall(part);
+      added += 1;
+    }
+  }
+  return added;
+}
+
 function summarizeAntigravityPayload(body) {
   const requestBody = body && body.request && typeof body.request === "object" ? body.request : body;
   const contents = Array.isArray(requestBody?.contents) ? requestBody.contents : [];
@@ -915,7 +978,23 @@ async function runProxy(options) {
   }
   async function passthrough(req, res, bodyBuffer) {
     try {
-      const requestHost = String(req.headers.host || "").split(":")[0];
+      const hostHeader = String(req.headers.host || "").trim().toLowerCase();
+      const bracketedHost = /^\[([^\]]+)\](?::\d+)?$/.exec(hostHeader);
+      const requestHost = bracketedHost
+        ? bracketedHost[1]
+        : (hostHeader === "::1" ? hostHeader : hostHeader.split(":")[0]);
+      if (isLoopbackHost(requestHost)) {
+        logProxyPass({
+          label: "LOOPBACK PASS",
+          method: req.method,
+          targetHost: req.headers.host || "localhost",
+          requestPath: safeRequestPath(req.url),
+          extra: "reason=oauth_callback_not_proxied",
+        });
+        if (!res.headersSent) res.writeHead(421, { "Content-Type": "text/plain" });
+        res.end("Loopback OAuth callback is not proxied. Remove localhost/127.0.0.1 from MITM DNS/proxy rules.");
+        return;
+      }
       const targetHost = targetHosts.includes(requestHost) ? requestHost : primaryTargetHost(options);
       const targetIP = await resolveTargetIP(targetHost);
       const requestPath = safeRequestPath(req.url);
@@ -1006,9 +1085,11 @@ async function runProxy(options) {
       if (mappedEntry && mappedEntry.model) {
         body.model = mappedEntry.model;
       } else {
-        // Fallback for unmapped native Antigravity models (like claude-opus-4.7)
-        // Ensure they route to valid Kiro upstream models rather than failing with 400.
+        // Fallback for unmapped native Antigravity models.
+        // Ensures they route to valid upstream models rather than failing with 400.
         const modelLower = String(originalModel || "").toLowerCase();
+
+        // ── Claude 4.6 versioned ───────────────────────────────────────────
         if (modelLower.includes("claude-opus-4.7") || modelLower.includes("claude-opus-4.6") || modelLower.includes("claude-opus-4-6-thinking")) {
           body.model = "kr/claude-sonnet-4.6-thinking-agentic";
         } else if (modelLower.includes("claude-sonnet-4.6") || modelLower.includes("claude-sonnet-4-6")) {
@@ -1017,6 +1098,25 @@ async function runProxy(options) {
           body.model = "kr/claude-sonnet-4.5-agentic";
         } else if (modelLower.includes("claude-opus-4.5")) {
           body.model = "kr/claude-sonnet-4.5-thinking-agentic";
+
+        // ── Claude 4 short aliases (Antigravity 2.0) ──────────────────────
+        } else if (modelLower === "claude-opus-4-thinking" || modelLower === "claude-opus-4.0-thinking") {
+          body.model = "kr/claude-sonnet-4.6-thinking-agentic";
+        } else if (modelLower === "claude-opus-4" || modelLower === "claude-opus-4.0") {
+          body.model = "kr/claude-sonnet-4.6-agentic";
+        } else if (modelLower === "claude-sonnet-4" || modelLower === "claude-sonnet-4.0") {
+          body.model = "kr/claude-sonnet-4.6-agentic";
+
+        // ── Gemini 3.5 (Antigravity 2.0 default) ──────────────────────────
+        } else if (modelLower.includes("gemini-3.5-pro-thinking") || modelLower.includes("gemini-3.5-pro-high")) {
+          body.model = "gemini-3.1-pro-high";
+        } else if (modelLower.includes("gemini-3.5-pro")) {
+          body.model = "gemini-3.1-pro-low";
+        } else if (modelLower.includes("gemini-3.5-flash-thinking")) {
+          body.model = "gemini-2.5-flash-thinking";
+        } else if (modelLower.includes("gemini-3.5-flash")) {
+          // Default model for agy 2.0 — route to gemini-3-flash (fast, no thinking overhead)
+          body.model = "gemini-3-flash";
         }
       }
       // Flatten nested body.request.* fields to top-level so 9router can find them.
@@ -1037,6 +1137,82 @@ async function runProxy(options) {
       const hasContents = Array.isArray(body.contents) && body.contents.length > 0;
       if (hasContents && !body.userAgent) body.userAgent = "antigravity";
       if (String(req.url || "").includes(":streamGenerateContent")) body.stream = true;
+
+      // ─── Strip inline image data ─────────────────────────────────────────
+      // Antigravity embeds generated images (base64) back into conversation history
+      // nested inside functionResponse.parts[].inlineData.
+      // This bloats the body to 10-50MB causing 9router to reject with 400.
+      // Only strip images inside functionResponse (tool outputs / generated images).
+      // Keep user-provided images (direct parts[].inlineData in user messages) intact
+      // so the model can still answer questions about user-uploaded images.
+      function stripGeneratedImages(contents) {
+        if (!Array.isArray(contents)) return;
+        for (const msg of contents) {
+          if (!msg || !Array.isArray(msg.parts)) continue;
+          for (let i = 0; i < msg.parts.length; i++) {
+            const part = msg.parts[i];
+            if (!part) continue;
+            // Strip inlineData inside functionResponse (generated images from tools)
+            if (part.functionResponse && part.functionResponse.parts) {
+              stripInlineDataInParts(part.functionResponse.parts);
+            }
+            if (part.functionResponse && part.functionResponse.response && part.functionResponse.response.parts) {
+              stripInlineDataInParts(part.functionResponse.response.parts);
+            }
+            // Strip executableCode output that contains large base64 blobs
+            if (part.codeExecutionResult && part.codeExecutionResult.output
+              && part.codeExecutionResult.output.length > 500000) {
+              part.codeExecutionResult.output = "[large output stripped]";
+            }
+          }
+        }
+      }
+      function stripInlineDataInParts(parts) {
+        if (!Array.isArray(parts)) return;
+        for (let i = 0; i < parts.length; i++) {
+          const p = parts[i];
+          if (p && p.inlineData && p.inlineData.data) {
+            const mime = p.inlineData.mimeType || "image/unknown";
+            parts[i] = { text: `[generated image: ${mime}]` };
+          }
+        }
+      }
+      if (Array.isArray(body.contents)) stripGeneratedImages(body.contents);
+      if (body.request && Array.isArray(body.request.contents)) stripGeneratedImages(body.request.contents);
+
+      // Gemini requires every replayed model functionCall part to carry a
+      // thoughtSignature when tools are enabled. Some upstream adapters omit it
+      // on tool-call chunks, and Antigravity replays that history to Google on
+      // the next turn. Add a deterministic surrogate so the request passes
+      // Google's schema validation instead of 400'ing before proxy routing.
+      const addedThoughtSignatures = ensureFunctionCallThoughtSignaturesInContents(body.contents)
+        + ensureFunctionCallThoughtSignaturesInContents(body.request && body.request.contents);
+      if (addedThoughtSignatures > 0) {
+        logProxyPass({
+          label: "PATCH",
+          method: req.method,
+          targetHost: req.headers.host || "unknown",
+          requestPath: safeRequestPath(req.url),
+          extra: `addedThoughtSignatures=${addedThoughtSignatures}`,
+        });
+      }
+      // ────────────────────────────────────────────────────────────────────────
+
+      // ─── Large payload passthrough (fallback) ──────────────────────────────
+      // After stripping images, if body is still too large, passthrough to Google.
+      const bodySize = Buffer.byteLength(JSON.stringify(body));
+      const LARGE_BODY_THRESHOLD = 5 * 1024 * 1024; // 5MB
+      if (bodySize > LARGE_BODY_THRESHOLD) {
+        logProxyPass({
+          label: "CHAT PASS",
+          method: req.method,
+          targetHost: req.headers.host || "unknown",
+          requestPath: safeRequestPath(req.url),
+          extra: `model=${originalModel} reason=large_body(${(bodySize / 1024 / 1024).toFixed(1)}MB)`,
+        });
+        return passthrough(req, res, bodyBuffer);
+      }
+      // ────────────────────────────────────────────────────────────────────────
 
       // ─── Thinking / Reasoning passthrough ───────────────────────────────────
       // Antigravity gửi thinkingConfig theo Gemini API format; proxy phải map sang
@@ -1136,18 +1312,28 @@ async function runProxy(options) {
         requestPath: routerUrl.pathname,
         extra: `model=${targetModel} stream=${body.stream === true} ${summarizeAntigravityPayload(body)}`,
       });
+      const requestLogEntry = {
+        ts: new Date().toISOString(),
+        id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(8).toString("hex"),
+        sourceModel: originalModel || "",
+        targetModel: targetModel || "",
+        reasoning: body.reasoning_effort || "",
+        method: req.method,
+        url: safeRequestPath(req.url),
+        stream: body.stream === true,
+        bodyBytes: Buffer.byteLength(JSON.stringify(body)),
+        summary: summarizeAntigravityPayload(body),
+        bodyPreview: previewJson(body),
+      };
       try {
+        appendRecentRequestLog(requestLogEntry);
         fs.appendFileSync(
           "/tmp/mitm-antigravity-upstream-summary.log",
-          `${new Date().toISOString()} model=${targetModel} ${summarizeAntigravityPayload(body)}\n`,
+          `${requestLogEntry.ts} requestId=${requestLogEntry.id} model=${targetModel} ${requestLogEntry.summary}\n`,
         );
-        // Debug: dump full body (truncated) to inspect what 9router receives
-        const debugBody = JSON.stringify(body);
-        fs.appendFileSync(
-          "/tmp/mitm-antigravity-upstream-body.log",
-          `${new Date().toISOString()} model=${targetModel} body=${debugBody.slice(0, 2000)}\n---\n`,
-        );
-      } catch (_) { /* debug summary is best effort */ }
+      } catch (error) {
+        logProxyError({ message: `recent request log failed: ${error.message}` });
+      }
 
       const startTime = Date.now();
 
@@ -1241,7 +1427,7 @@ async function runProxy(options) {
         try {
           fs.appendFileSync(
             "/tmp/mitm-antigravity-upstream-summary.log",
-            `${new Date().toISOString()} OK model=${targetModel} elapsed=${elapsed}s writableEnded=${res.writableEnded} destroyed=${res.destroyed}\n`,
+            `${new Date().toISOString()} requestId=${requestLogEntry.id} OK model=${targetModel} elapsed=${elapsed}s writableEnded=${res.writableEnded} destroyed=${res.destroyed}\n`,
           );
         } catch (_) { /* best effort */ }
       } finally {
@@ -1355,6 +1541,10 @@ module.exports = {
   coerceJsonSchemaTypes,
   coerceToolSchemasInBody,
   sanitizeKiroRequestBody,
+  appendRecentRequestLog,
+  previewJson,
+  ensureFunctionCallThoughtSignaturesInContents,
+  syntheticThoughtSignatureForFunctionCall,
   stripInternalInstructionLeaks,
   sanitizeInternalInstructionJsonText,
   createInternalInstructionSseSanitizer,

@@ -1,6 +1,7 @@
 const path = require("path");
 
 const DEFAULT_TARGET_HOSTS = [
+  // Antigravity IDE + agy CLI 1.x primary hosts
   "daily-cloudcode-pa.googleapis.com",
   "cloudcode-pa.googleapis.com",
   "daily-cloudaicompanion.googleapis.com",
@@ -9,6 +10,9 @@ const DEFAULT_TARGET_HOSTS = [
   "cloudaicompanion.sandbox.googleapis.com",
   "daily-cloudcode-pa.sandbox.googleapis.com",
   "cloudcode-pa.sandbox.googleapis.com",
+  // Antigravity 2.0 / agy CLI new hosts
+  "autopush-cloudaicompanion.sandbox.googleapis.com",
+  "staging-cloudaicompanion.sandbox.googleapis.com",
 ];
 const DEFAULT_TARGET = DEFAULT_TARGET_HOSTS[0];
 
@@ -21,35 +25,61 @@ const DEFAULT_ROUTER_URL = "http://localhost:20128/v1/chat/completions";
 const DEFAULT_MODEL_PREFIX = "ag/";
 const APP_NAME = "mitm-antigravity";
 const ANTIGRAVITY_ALIASES = [
+  // ── Gemini 2.5 (legacy) ──────────────────────────────────────────────────
   "gemini-2.5-pro",
   "gemini-2.5-flash",
   "gemini-2.5-flash-thinking",
   "gemini-2.5-flash-lite",
-  "gemini-3.1-pro-high",
-  "gemini-3.1-pro-low",
-  "gemini-3.1-flash-lite",
-  "gemini-3.1-flash-image",
+  // ── Gemini 3 Flash ───────────────────────────────────────────────────────
   "gemini-3-flash",
   "gemini-3-flash-agent",
   "gemini-3-flash-a",
   "gemini-3-flash-b",
   "gemini-3-flash-c",
-  "gemini-3.5-flash-low",
-  "gemini-pro-agent",
-  "claude-sonnet-4-6",
-  "claude-opus-4-6-thinking",
-  "gpt-oss-120b-medium",
+  // ── Gemini 3 Pro ─────────────────────────────────────────────────────────
   "gemini-3-pro-high",
   "gemini-3-pro-low",
+  // ── Gemini 3.1 ───────────────────────────────────────────────────────────
+  "gemini-3.1-pro-high",
+  "gemini-3.1-pro-low",
+  "gemini-3.1-flash-lite",
+  "gemini-3.1-flash-image",
+  // ── Gemini 3.5 (Antigravity 2.0 default) ─────────────────────────────────
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-thinking",
+  "gemini-3.5-flash-low",
+  "gemini-3.5-pro",
+  "gemini-3.5-pro-thinking",
+  // ── Claude ───────────────────────────────────────────────────────────────
+  "claude-sonnet-4-6",
+  "claude-opus-4-6-thinking",
+  // Antigravity 2.0 short aliases
+  "claude-sonnet-4",
+  "claude-opus-4",
+  "claude-opus-4-thinking",
+  // ── GPT / OSS ────────────────────────────────────────────────────────────
+  "gpt-oss-120b-medium",
+  // ── Tab / preview ────────────────────────────────────────────────────────
   "tab_flash_lite_preview",
   "tab_jump_flash_lite_preview",
+  // ── Agent aliases ─────────────────────────────────────────────────────────
+  "gemini-pro-agent",
 ];
 const PRIMARY_ANTIGRAVITY_ALIASES = [
+  // Antigravity 2.0 defaults first
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-thinking",
+  "gemini-3.5-pro",
+  // 3.1 tier
   "gemini-3.1-pro-high",
   "gemini-3.1-pro-low",
   "gemini-3-flash",
+  // Claude
+  "claude-sonnet-4",
   "claude-sonnet-4-6",
+  "claude-opus-4-thinking",
   "claude-opus-4-6-thinking",
+  // GPT
   "gpt-oss-120b-medium",
 ];
 const MAPPABLE_ANTIGRAVITY_ALIASES = [...ANTIGRAVITY_ALIASES];
