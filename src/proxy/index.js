@@ -1112,6 +1112,8 @@ async function runProxy(options) {
           body.model = "gemini-3.1-pro-high";
         } else if (modelLower.includes("gemini-3.5-pro")) {
           body.model = "gemini-3.1-pro-low";
+        } else if (modelLower.includes("gemini-3.5-flash-extra-low")) {
+          body.model = "gemini-3.5-flash-low";
         } else if (modelLower.includes("gemini-3.5-flash-thinking")) {
           body.model = "gemini-2.5-flash-thinking";
         } else if (modelLower.includes("gemini-3.5-flash")) {

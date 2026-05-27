@@ -37,6 +37,7 @@ function modelDisplayName(alias, mappedModel) {
         "gemini-3.5-flash": "Gemini 3.5 Flash",
         "gemini-3.5-flash-thinking": "Gemini 3.5 Flash Thinking",
         "gemini-3.5-flash-low": "Gemini 3.5 Flash Low",
+        "gemini-3.5-flash-extra-low": "Gemini 3.5 Flash Extra Low",
         "gemini-3.5-pro": "Gemini 3.5 Pro",
         "gemini-3.5-pro-thinking": "Gemini 3.5 Pro Thinking",
         // ── Claude 4.6 (versioned) ────────────────────────────────────────────

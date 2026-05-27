@@ -48,6 +48,7 @@ const ANTIGRAVITY_ALIASES = [
   "gemini-3.5-flash",
   "gemini-3.5-flash-thinking",
   "gemini-3.5-flash-low",
+  "gemini-3.5-flash-extra-low",   // live: MODEL_PLACEHOLDER_M187, "Gemini 3.5 Flash (Low)"
   "gemini-3.5-pro",
   "gemini-3.5-pro-thinking",
   // ── Claude ───────────────────────────────────────────────────────────────

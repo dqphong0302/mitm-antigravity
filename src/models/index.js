@@ -19,6 +19,11 @@ const BUILTIN_MODEL_VALUE_ALIASES = new Map([
   ["MODEL_PLACEHOLDER_M21", "gemini-3.1-flash-image"],
   ["MODEL_PLACEHOLDER_M18", "gemini-3-flash"],
   ["MODEL_PLACEHOLDER_M84", "gemini-3-flash-agent"],
+  // M132: live server reports gemini-3-flash-agent → MODEL_PLACEHOLDER_M132
+  // displayName "Gemini 3.5 Flash (High)" — same alias, different internal slot
+  ["MODEL_PLACEHOLDER_M132", "gemini-3-flash-agent"],
+  // M16: gemini-pro-agent → "Gemini 3.1 Pro (High)" — distinct slot from M37
+  ["MODEL_PLACEHOLDER_M16", "gemini-pro-agent"],
   // ── Claude placeholders ───────────────────────────────────────────────────
   ["MODEL_PLACEHOLDER_M35", "claude-sonnet-4-6"],
   ["MODEL_PLACEHOLDER_M26", "claude-opus-4-6-thinking"],
@@ -38,6 +43,10 @@ const BUILTIN_MODEL_VALUE_ALIASES = new Map([
   ["MODEL_GOOGLE_GEMINI_3_5_FLASH", "gemini-3.5-flash"],
   ["MODEL_GOOGLE_GEMINI_3_5_FLASH_THINKING", "gemini-3.5-flash-thinking"],
   ["MODEL_GOOGLE_GEMINI_3_5_FLASH_LOW", "gemini-3.5-flash-low"],
+  // M20: live server maps gemini-3.5-flash-low → MODEL_PLACEHOLDER_M20
+  ["MODEL_PLACEHOLDER_M20", "gemini-3.5-flash-low"],
+  // M187: gemini-3.5-flash-extra-low → "Gemini 3.5 Flash (Low)" — new tier in live model list
+  ["MODEL_PLACEHOLDER_M187", "gemini-3.5-flash-extra-low"],
   ["MODEL_GOOGLE_GEMINI_3_5_PRO", "gemini-3.5-pro"],
   ["MODEL_GOOGLE_GEMINI_3_5_PRO_THINKING", "gemini-3.5-pro-thinking"],
   // Numeric IDs seen in agy 2.0 traffic (may expand as more are observed)
