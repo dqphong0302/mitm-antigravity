@@ -68,10 +68,24 @@ const ANTIGRAVITY_ALIASES = [
 ];
 const PRIMARY_ANTIGRAVITY_ALIASES = [
   // Main Antigravity models shown in GUI mapping table.
-  // Keep this short; advanced aliases still work through config/import/CLI.
+  // Hide legacy 2.5 aliases; advanced aliases still work through config/import/CLI.
+  // Gemini 3.5 tiers
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-thinking",
+  "gemini-3.5-flash-low",
+  "gemini-3.5-flash-extra-low",
+  "gemini-3.5-pro",
+  "gemini-3.5-pro-thinking",
+  // Gemini 3.1 / 3.x
   "gemini-3.1-pro-high",
   "gemini-3.1-pro-low",
+  "gemini-3.1-flash-lite",
+  "gemini-3.1-flash-image",
+  "gemini-3-flash",
+  // Agent aliases
+  "gemini-pro-agent",
   "gemini-3-flash-agent",
+  // Claude / GPT
   "claude-sonnet-4-6",
   "claude-opus-4-6-thinking",
   "gpt-oss-120b-medium",

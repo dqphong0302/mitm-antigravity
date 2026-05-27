@@ -1071,8 +1071,18 @@ test("GUI client script is valid browser JavaScript", () => {
 
 test("wizard keeps primary aliases while GUI can expose all mappable aliases", () => {
   assert.deepEqual(mitm.PRIMARY_ANTIGRAVITY_ALIASES, [
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-thinking",
+    "gemini-3.5-flash-low",
+    "gemini-3.5-flash-extra-low",
+    "gemini-3.5-pro",
+    "gemini-3.5-pro-thinking",
     "gemini-3.1-pro-high",
     "gemini-3.1-pro-low",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-flash-image",
+    "gemini-3-flash",
+    "gemini-pro-agent",
     "gemini-3-flash-agent",
     "claude-sonnet-4-6",
     "claude-opus-4-6-thinking",
