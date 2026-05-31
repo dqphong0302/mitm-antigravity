@@ -80,6 +80,7 @@ Options:
   --retry-delay       Initial retry delay in ms (default: 1000)
   --retry-backoff     Backoff multiplier for retries (default: 1.5)
   --request-timeout-ms  Upstream request timeout in ms (default: 600000, 0 disables)
+  --stream-idle-timeout-ms  SSE idle timeout in ms after first byte (default: 120000, 0 disables)
   --ui-port           Local GUI port (default: 20245)
   --no-open           Do not open browser for GUI
   --help              Show help
@@ -315,6 +316,7 @@ async function main() {
     retryDelay: Number(args["retry-delay"] || process.env.MITM_RETRY_DELAY || savedConfig.retryDelay),
     retryBackoff: Number(args["retry-backoff"] || process.env.MITM_RETRY_BACKOFF || savedConfig.retryBackoff),
     requestTimeoutMs: Number(args["request-timeout-ms"] || process.env.MITM_REQUEST_TIMEOUT_MS || savedConfig.requestTimeoutMs),
+    streamIdleTimeoutMs: Number(args["stream-idle-timeout-ms"] || process.env.MITM_STREAM_IDLE_TIMEOUT_MS || savedConfig.streamIdleTimeoutMs),
     uiPort: Number(args["ui-port"] || process.env.MITM_UI_PORT || 20245),
     noOpen: args["no-open"] === true || String(process.env.MITM_NO_OPEN || "").toLowerCase() === "true",
   };

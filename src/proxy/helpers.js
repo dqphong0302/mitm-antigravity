@@ -36,12 +36,32 @@ const ACCOUNT_BOOTSTRAP_URL_PATTERNS = [
     ":fetchExtensionConfig",
     ":recordEvent",
     ":batchRecordEvents",
+    "/v1/userinfo",
+    "/userinfo",
+    "/oauth2/v1/userinfo",
+    "/oauth2/v2/userinfo",
 ];
 const ACCOUNT_QUOTA_URL_PATTERNS = [
+    // Antigravity IDE / agy 1.x quota and token accounting endpoints
     ":retrieveUserQuota",
     ":countTokens",
     ":getQuota",
     ":checkQuota",
+    // Antigravity 2.0 quota endpoints observed across IDE/CLI channels
+    ":fetchUserQuota",
+    ":fetchQuota",
+    ":getUserQuota",
+    ":checkUserQuota",
+    ":retrieveQuota",
+    ":fetchUsage",
+    ":getUsage",
+    ":getUserUsage",
+    ":fetchUsageLimits",
+    ":getUsageLimits",
+    "/quota",
+    "/quotas",
+    "/usage",
+    "/usageLimits",
 ];
 const ACCOUNT_ENTITLEMENT_URL_PATTERNS = [
     ":getEntitlements",
@@ -102,6 +122,10 @@ function isModelBootstrapMergeRequest(reqUrl) {
 
 function isAccountBootstrapRequest(reqUrl) {
     return urlIncludesAny(reqUrl, ACCOUNT_PASSTHROUGH_URL_PATTERNS);
+}
+
+function isAccountQuotaRequest(reqUrl) {
+    return urlIncludesAny(reqUrl, ACCOUNT_QUOTA_URL_PATTERNS);
 }
 
 function normalizeHost(host) {
@@ -175,6 +199,7 @@ function responseBodySnippetForLog(raw, headers = {}) {
 
 function passthroughLogLabel(reqUrl) {
     if (isFetchAvailableModelsRequest(reqUrl)) return "AUTH MODELS";
+    if (isAccountQuotaRequest(reqUrl)) return "AUTH QUOTA";
     if (isAccountBootstrapRequest(reqUrl)) return "AUTH PASS";
     if (isChatRequestUrl(reqUrl)) return "CHAT PASS";
     return "PASS";
@@ -330,6 +355,7 @@ module.exports = {
     buildRouterHeaders,
     bypassInterceptReason,
     isAccountBootstrapRequest,
+    isAccountQuotaRequest,
     isChatRequestUrl,
     isClientAbortError,
     isFetchAvailableModelsRequest,

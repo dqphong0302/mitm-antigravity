@@ -117,7 +117,10 @@ const DEFAULT_CONFIG = {
   retryDelay: 1000,
   retryBackoff: 1.5,
   requestTimeoutMs: 10 * 60 * 1000,
+  streamIdleTimeoutMs: 2 * 60 * 1000,
+  sudoPasswordCache: null,
 };
+
 
 const LEGACY_DEFAULT_MODEL_MAP = Object.fromEntries(ANTIGRAVITY_ALIASES.map((alias) => [alias, "cx/gpt-5.5"]));
 

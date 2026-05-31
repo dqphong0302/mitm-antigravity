@@ -1,6 +1,8 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
+
 
 const {
   APP_NAME,
@@ -144,6 +146,50 @@ function writeConfig(config) {
   fs.writeFileSync(settingsPath(), `${JSON.stringify(settings, null, 2)}\n`);
 }
 
+function encryptPassword(password, keyString) {
+  const key = crypto.createHash("sha256").update(keyString).digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(password, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    iv: iv.toString("hex"),
+    encrypted: encrypted.toString("hex"),
+    tag: tag.toString("hex")
+  };
+}
+
+function decryptPassword(data, keyString) {
+  if (!data || !data.iv || !data.encrypted || !data.tag) return "";
+  try {
+    const key = crypto.createHash("sha256").update(keyString).digest();
+    const iv = Buffer.from(data.iv, "hex");
+    const tag = Buffer.from(data.tag, "hex");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    return decipher.update(data.encrypted, "hex", "utf8") + decipher.final("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function saveSudoPassword(password) {
+  if (!password) return;
+  const key = machineId();
+  const encryptedObj = encryptPassword(password, key);
+  const config = readConfig();
+  config.sudoPasswordCache = encryptedObj;
+  writeConfig(config);
+}
+
+function getSudoPassword() {
+  const config = readConfig();
+  if (!config.sudoPasswordCache) return "";
+  const key = machineId();
+  return decryptPassword(config.sudoPasswordCache, key);
+}
+
+
 function writeLegacyConfig(config) {
   ensureAppDir();
   fs.writeFileSync(configPath(), `${JSON.stringify(config, null, 2)}\n`);
@@ -175,8 +221,10 @@ function redactConfig(config) {
   return {
     ...config,
     apiKey: config.apiKey ? `${String(config.apiKey).slice(0, 6)}...${String(config.apiKey).slice(-4)}` : "",
+    sudoPasswordCache: config.sudoPasswordCache ? "[REDACTED]" : null,
   };
 }
+
 
 function exportConfig() {
   const config = readConfig();
@@ -234,6 +282,8 @@ module.exports = {
   readSettings,
   redactConfig,
   runtimeDir,
+  saveSudoPassword,
+  getSudoPassword,
   settingsPath,
   targetHostsFrom,
   writeConfig,

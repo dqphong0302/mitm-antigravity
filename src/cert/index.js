@@ -217,6 +217,22 @@ async function applyAntigravityNodeTrust(certPath) {
   const antigravityRunning = await isAntigravityRunning();
   const currentValue = await getNodeExtraCaCertsEnv();
   const status = await checkAntigravityNodeTrust(certPath);
+
+  // Idempotent: the CA fingerprint is already present in NODE_EXTRA_CA_CERTS
+  // (or its bundle), so re-writing the env var is pointless. On Windows that
+  // write is elevated (Machine scope) and would pop a UAC prompt on every
+  // Start/DNS click; on macOS it skips a redundant launchctl setenv.
+  if (status.applied) {
+    return {
+      supported: true,
+      applied: true,
+      changed: false,
+      value: currentValue,
+      restartRequired: false,
+      antigravityRunning,
+    };
+  }
+
   let nextValue = currentValue || certPath;
 
   if (currentValue && !status.applied) {
@@ -242,6 +258,29 @@ async function applyAntigravityNodeTrust(certPath) {
     antigravityRunning,
   };
 }
+
+async function cleanAntigravityNodeTrust() {
+  if (IS_MAC) {
+    try {
+      await execPromise(`launchctl unsetenv ${NODE_EXTRA_CA_CERTS}`);
+    } catch {
+      // ignore
+    }
+  } else if (IS_WIN) {
+    try {
+      const psUser = `[Environment]::SetEnvironmentVariable(${powershellSingleQuote(NODE_EXTRA_CA_CERTS)}, $null, 'User')`;
+      const psMachine = `[Environment]::SetEnvironmentVariable(${powershellSingleQuote(NODE_EXTRA_CA_CERTS)}, $null, 'Machine')`;
+      try {
+        await execPowerShell(psUser);
+      } catch (_) {}
+      try {
+        await execPowerShell(psMachine, { elevated: !(await isWindowsElevated()) });
+      } catch (_) {}
+    } catch (_) {}
+  }
+  delete process.env[NODE_EXTRA_CA_CERTS];
+}
+
 
 async function isAntigravityRunning() {
   if (IS_WIN) {
@@ -373,6 +412,19 @@ function createServerCertificate(ca, targetHosts) {
   };
 }
 
+function isCertExpired(certPath, days = 30) {
+  try {
+    if (!fs.existsSync(certPath)) return true;
+    const cert = new crypto.X509Certificate(fs.readFileSync(certPath));
+    const validToDate = new Date(cert.validTo);
+    const limitDate = new Date();
+    limitDate.setDate(limitDate.getDate() + days);
+    return validToDate <= limitDate;
+  } catch {
+    return true;
+  }
+}
+
 function writePrivateFile(filePath, content) {
   fs.writeFileSync(filePath, content, { mode: 0o600 });
   try { fs.chmodSync(filePath, 0o600); } catch { /* best effort */ }
@@ -382,13 +434,27 @@ async function generateCert(targetHostOrHosts, { force = false, sudoPassword = "
   const targetHosts = targetHostsFrom({ targetHosts: normalizeTargetHosts(targetHostOrHosts) });
   const { caCertPath, caKeyPath, certPath, dir, keyPath } = certPaths();
 
+  const isExpired = isCertExpired(certPath) || isCertExpired(caCertPath);
+  const covers = certCoversHosts(certPath, targetHosts);
+  const usesLocal = certUsesLocalCA(certPath, caCertPath);
+
   if (!force
     && fs.existsSync(keyPath)
     && fs.existsSync(certPath)
     && fs.existsSync(caCertPath)
-    && certCoversHosts(certPath, targetHosts)
-    && certUsesLocalCA(certPath, caCertPath)) {
+    && !isExpired
+    && covers
+    && usesLocal) {
     return { key: keyPath, cert: certPath, ca: caCertPath, created: false };
+  }
+
+  // If old cert exists but is expired/invalid, uninstall it first
+  if (fs.existsSync(caCertPath) && (isExpired || !covers || !usesLocal)) {
+    try {
+      await uninstallCert(caCertPath, targetHosts[0], sudoPassword);
+    } catch {
+      // best effort
+    }
   }
 
   await ensureWritableCertDir(sudoPassword);
@@ -404,6 +470,7 @@ async function generateCert(targetHostOrHosts, { force = false, sudoPassword = "
 
   return { key: keyPath, cert: certPath, ca: caCertPath, created: true };
 }
+
 
 async function checkCertInstalled(certPath, targetHost) {
   if (IS_WIN) {
@@ -437,17 +504,20 @@ function linuxCertHint() {
 }
 
 // Gộp cert install + hosts write + DNS flush thành 1 elevated script = 1 UAC prompt.
-// hostsContent và hostsPath là optional: nếu truyền vào sẽ ghi hosts cùng lúc.
-async function windowsBatchInstallCertAndHosts({ certPath, hostsContent, hostsFile }) {
+// installCert/hostsContent đều optional: chỉ đưa vào script những bước thực sự
+// cần. Nếu không có bước nào (cert đã trust + hosts không đổi) thì KHÔNG gọi
+// execPowerShell elevated → không pop UAC thừa (mirror applyMacSetup trên macOS).
+async function windowsBatchInstallCertAndHosts({ certPath, installCert = true, hostsContent, hostsFile }) {
   const tempHosts = hostsContent
-    ? require("path").join(require("os").tmpdir(), `mitm-hosts-batch-${process.pid}-${Date.now()}.tmp`)
+    ? path.join(os.tmpdir(), `mitm-hosts-batch-${process.pid}-${Date.now()}.tmp`)
     : null;
-  if (tempHosts) require("fs").writeFileSync(tempHosts, hostsContent, { mode: 0o600 });
+  if (tempHosts) fs.writeFileSync(tempHosts, hostsContent, { mode: 0o600 });
 
-  const ps = [
+  const ps = [];
+  if (installCert) {
     // Cài cert vào LocalMachine\\Root
-    `certutil -addstore Root '${certPath.replace(/'/g, "''")}' | Out-Null`,
-  ];
+    ps.push(`certutil -addstore Root '${certPath.replace(/'/g, "''")}' | Out-Null`);
+  }
   if (tempHosts && hostsFile) {
     ps.push(
       `Copy-Item -LiteralPath '${tempHosts.replace(/'/g, "''")}' -Destination '${hostsFile.replace(/'/g, "''")}' -Force`,
@@ -455,8 +525,15 @@ async function windowsBatchInstallCertAndHosts({ certPath, hostsContent, hostsFi
       `Remove-Item -Path '${tempHosts.replace(/'/g, "''")}' -Force -ErrorAction SilentlyContinue`,
     );
   }
+
+  // Nothing elevated to do → don't show a UAC prompt at all.
+  if (ps.length === 0) {
+    if (tempHosts) { try { fs.unlinkSync(tempHosts); } catch { /* best effort */ } }
+    return;
+  }
+
   await execPowerShell(ps.join("; "), { elevated: !(await isWindowsElevated()) });
-  if (tempHosts) { try { require("fs").unlinkSync(tempHosts); } catch { /* best effort */ } }
+  if (tempHosts) { try { fs.unlinkSync(tempHosts); } catch { /* best effort */ } }
 }
 
 async function installCert(certPath, targetHost, sudoPassword) {
@@ -546,11 +623,13 @@ module.exports = {
   certUsesLocalCA,
   checkAntigravityNodeTrust,
   checkCertInstalled,
+  cleanAntigravityNodeTrust,
   generateCert,
   getCertFingerprint,
   getPemFingerprints,
   installCert,
   isAntigravityRunning,
+  isCertExpired,
   macCertTrustVerifyCommand,
   macLoginTrustCommand,
   macSystemTrustCommand,

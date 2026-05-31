@@ -1,13 +1,17 @@
 node_modules/
 dist/
+target-gui-test/
 settings.json
 *.log
 .DS_Store
+.antigravitycli/
 .pytest_cache/
 gui_current_state.png
 src-tauri/target/
 src-tauri/resources/*
 !src-tauri/resources/.gitkeep
+scratch_test*.js
+typescript
 
 # Tauri signing keys – KHÔNG bao giờ commit private key lên git
 tauri-signing.key

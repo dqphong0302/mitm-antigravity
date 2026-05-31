@@ -70,6 +70,25 @@ const BUILTIN_MODEL_VALUE_ALIASES = new Map([
   ["claude-opus-4", "claude-opus-4"],
 ]);
 
+const MODEL_SYNONYMS = {
+  antigravity: {
+    "gemini-default": "gemini-3.5-flash-low",
+    "gemini-3.1-pro-high": "gemini-pro-agent",
+    "gemini-3.5": "gemini-3.5-flash",
+  },
+};
+
+const MODEL_PATTERNS = {
+  antigravity: [
+    { match: /flash.*low|low.*flash/i, alias: "gemini-3.5-flash-low" },
+    { match: /pro.*low|low.*pro/i, alias: "gemini-3.1-pro-low" },
+    { match: /opus/i, alias: "claude-opus-4-6-thinking" },
+    { match: /sonnet/i, alias: "claude-sonnet-4-6" },
+    { match: /pro.*high|high.*pro/i, alias: "gemini-3.1-pro-high" },
+  ],
+};
+
+
 const MODEL_FIELD_NAMES = new Set([
   "model",
   "modelid",
@@ -401,8 +420,23 @@ function getMappedEntry(model, options) {
   if (options.model) return { model: options.model };
 
   const candidates = modelNameCandidates(model);
+  const extendedCandidates = [...candidates];
+  for (const candidate of candidates) {
+    const synonym = MODEL_SYNONYMS.antigravity[candidate];
+    if (synonym && !extendedCandidates.includes(synonym)) {
+      extendedCandidates.push(synonym);
+    }
+    for (const pattern of MODEL_PATTERNS.antigravity) {
+      if (pattern.match.test(candidate)) {
+        if (!extendedCandidates.includes(pattern.alias)) {
+          extendedCandidates.push(pattern.alias);
+        }
+      }
+    }
+  }
+
   if (options.modelMap) {
-    for (const candidate of candidates) {
+    for (const candidate of extendedCandidates) {
       if (MAPPABLE_ALIAS_SET.has(candidate) && options.modelMap[candidate]) {
         return normalizeMappingEntry(options.modelMap[candidate]);
       }
@@ -412,7 +446,7 @@ function getMappedEntry(model, options) {
       const target = normalizeMappingEntry(options.modelMap[key]);
       return MAPPABLE_ALIAS_SET.has(key)
         && target
-        && candidates.some((candidate) => candidate.startsWith(key) || key.startsWith(candidate));
+        && extendedCandidates.some((candidate) => candidate.startsWith(key) || key.startsWith(candidate));
     });
     if (prefixKey) return normalizeMappingEntry(options.modelMap[prefixKey]);
   }
@@ -422,7 +456,7 @@ function getMappedEntry(model, options) {
     const dbFile = path.join(os.homedir(), ".9router", "db.json");
     const db = JSON.parse(fs.readFileSync(dbFile, "utf-8"));
     const aliases = db.mitmAlias?.antigravity || {};
-    for (const candidate of candidates) {
+    for (const candidate of extendedCandidates) {
       if (MAPPABLE_ALIAS_SET.has(candidate) && aliases[candidate]) return normalizeMappingEntry(aliases[candidate]);
     }
   } catch {
@@ -432,11 +466,7 @@ function getMappedEntry(model, options) {
   // ~/.config/antigravity/config.toml — agy 2.0 CLI config
   try {
     const agyAliases = readAgyConfigAliases();
-    for (const candidate of candidates) {
-      if (agyAliases[candidate]) return normalizeMappingEntry(agyAliases[candidate]);
-    }
-    // Also try bare model name (agy may send full IDs not in MAPPABLE_ALIAS_SET)
-    for (const candidate of candidates) {
+    for (const candidate of extendedCandidates) {
       if (agyAliases[candidate]) return normalizeMappingEntry(agyAliases[candidate]);
     }
   } catch {

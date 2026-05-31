@@ -1,14 +1,15 @@
 const dns = require("dns");
+const http2 = require("http2");
 const https = require("https");
+const tls = require("tls");
 const fs = require("fs");
 const crypto = require("crypto");
-const { promisify } = require("util");
 
 const { APP_NAME } = require("../config/constants");
 const { certPaths } = require("../cert");
 const { primaryTargetHost, targetHostsFrom } = require("../config");
 const { collectBodyRaw, sendJson } = require("../system/http");
-const { redact } = require("../system/logging");
+const { applyAntigravityIdeVersionOverride } = require("./ide-version");
 const {
   extractModelFromBody,
   extractModelFromUrl,
@@ -20,6 +21,7 @@ const {
   buildRouterHeaders,
   bypassInterceptReason,
   isAccountBootstrapRequest,
+  isAccountQuotaRequest,
   isChatRequestUrl,
   isLoopbackHost,
   isModelBootstrapMergeRequest,
@@ -36,8 +38,23 @@ const {
   logProxyPass,
   logProxyReady,
 } = require("./logger");
+const { MB, ProxyMemoryLimitError, bytesLabel, ensureBufferLimit } = require("./memory");
+const { appendRecentRequestLog, previewJson } = require("./request-log");
+const {
+  createInternalInstructionSseSanitizer,
+  isInternalInstructionLeak,
+  sanitizeInternalInstructionJsonText,
+  stripInternalInstructionLeaks,
+} = require("./internal-instruction-sanitizer");
+const {
+  adaptiveGptModelForReasoning,
+  inferReasoningEffort,
+  normalizeReasoningEffort,
+  shouldUseReasoningEffort,
+} = require("./reasoning");
+const { coerceJsonSchemaTypes, coerceToolSchemasInBody } = require("./schema");
+const { isKiroProviderModel, sanitizeKiroRequestBody } = require("./kiro");
 
-const MB = 1024 * 1024;
 // Normal Antigravity chat payloads are much smaller; keep guards ~1.5x larger
 // than generous baseline sizes so heavy prompts breathe but bad streams cannot
 // grow memory without bound.
@@ -45,506 +62,11 @@ const MAX_REQUEST_BODY_BYTES = 96 * MB;
 const MAX_RESPONSE_BODY_BYTES = 192 * MB;
 const MAX_SSE_BUFFER_BYTES = 6 * MB;
 const MAX_PASSTHROUGH_BUFFER_BYTES = 48 * MB;
-const RECENT_REQUEST_LOG_PATH = process.env.MITM_RECENT_REQUEST_LOG || "/tmp/mitm-antigravity-recent-requests.json";
-const RECENT_REQUEST_LOG_LIMIT = Math.max(1, Number(process.env.MITM_RECENT_REQUEST_LOG_LIMIT || 10));
-const RECENT_REQUEST_BODY_PREVIEW_BYTES = Math.max(0, Number(process.env.MITM_RECENT_REQUEST_BODY_PREVIEW_BYTES || 20000));
-
-function bytesLabel(bytes) {
-  return `${(bytes / MB).toFixed(1)}MB`;
-}
-
-class ProxyMemoryLimitError extends Error {
-  constructor(message, statusCode = 502) {
-    super(message);
-    this.name = "ProxyMemoryLimitError";
-    this.statusCode = statusCode;
-  }
-}
-
-function ensureBufferLimit(totalBytes, maxBytes, label) {
-  if (maxBytes > 0 && totalBytes > maxBytes) {
-    throw new ProxyMemoryLimitError(`${label} exceeds ${bytesLabel(maxBytes)}`);
-  }
-}
-
-function safeJsonParse(text, fallback) {
-  try {
-    return JSON.parse(String(text || ""));
-  } catch {
-    return fallback;
-  }
-}
-
-function previewJson(value, maxBytes = RECENT_REQUEST_BODY_PREVIEW_BYTES) {
-  if (maxBytes <= 0) return undefined;
-  let text;
-  try {
-    text = JSON.stringify(redact(value));
-  } catch {
-    text = "[unserializable]";
-  }
-  const buffer = Buffer.from(text);
-  if (buffer.length <= maxBytes) return { truncated: false, bytes: buffer.length, json: text };
-  return {
-    truncated: true,
-    bytes: buffer.length,
-    json: buffer.subarray(0, maxBytes).toString("utf8"),
-  };
-}
-
-function appendRecentRequestLog(entry, filePath = RECENT_REQUEST_LOG_PATH, limit = RECENT_REQUEST_LOG_LIMIT) {
-  const existing = safeJsonParse(fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "[]", []);
-  const entries = Array.isArray(existing) ? existing : [];
-  entries.push(entry);
-  const kept = entries.slice(-Math.max(1, Number(limit) || 10));
-  fs.writeFileSync(filePath, `${JSON.stringify(kept, null, 2)}\n`, "utf8");
-}
-
-// ─── Responses API helpers (for GPT / Responses API models) ────────────────
-
-const INTERNAL_INSTRUCTION_MARKER_RE = /CRITICAL\s+INSTRUCTION\s+\d+\s*:/i;
-const INTERNAL_INSTRUCTION_PREFIX = "CRITICAL INSTRUCTION ";
-const TEXT_PAYLOAD_KEYS = new Set(["content", "delta", "message", "output_text", "text"]);
 
 /** GPT model names (or legacy cx/ prefix) → OpenAI Responses API instead of chat/completions */
 function isGptResponsesModel(modelName) {
   const normalized = String(modelName || "").toLowerCase();
   return normalized.includes("gpt") || normalized.startsWith("cx/");
-}
-
-function isInternalInstructionLeak(text) {
-  return INTERNAL_INSTRUCTION_MARKER_RE.test(String(text || ""));
-}
-
-function isInternalInstructionMarkerPrefix(value) {
-  const upper = String(value || "").toUpperCase();
-  if (!upper) return false;
-  if (INTERNAL_INSTRUCTION_PREFIX.startsWith(upper)) return true;
-  if (!upper.startsWith(INTERNAL_INSTRUCTION_PREFIX)) return false;
-  return /^\d{0,6}\s*:?\s*$/.test(upper.slice(INTERNAL_INSTRUCTION_PREFIX.length));
-}
-
-function internalInstructionMarkerPrefixSuffixLength(value) {
-  const text = String(value || "");
-  const maxLength = Math.min(text.length, INTERNAL_INSTRUCTION_PREFIX.length + 10);
-  for (let length = maxLength; length > 0; length -= 1) {
-    if (isInternalInstructionMarkerPrefix(text.slice(-length))) return length;
-  }
-  return 0;
-}
-
-function internalInstructionBoundaryIndex(value) {
-  const text = String(value || "");
-  const semicolon = text.indexOf(";");
-  const blankLine = text.search(/\r?\n\s*\r?\n/);
-  if (semicolon === -1) return blankLine;
-  if (blankLine === -1) return semicolon;
-  return Math.min(semicolon, blankLine);
-}
-
-function createInternalInstructionTextSanitizer() {
-  let pending = "";
-  let suppressing = false;
-
-  function push(value) {
-    pending += String(value || "");
-    let output = "";
-
-    while (pending) {
-      if (suppressing) {
-        const boundary = internalInstructionBoundaryIndex(pending);
-        if (boundary === -1) {
-          pending = "";
-          return output;
-        }
-        pending = pending.slice(boundary + 1).replace(/^\s+/, "");
-        suppressing = false;
-        continue;
-      }
-
-      const match = INTERNAL_INSTRUCTION_MARKER_RE.exec(pending);
-      if (!match) {
-        const suffixLength = internalInstructionMarkerPrefixSuffixLength(pending);
-        const emitLength = pending.length - suffixLength;
-        output += pending.slice(0, emitLength);
-        pending = pending.slice(emitLength);
-        return output;
-      }
-
-      output += pending.slice(0, match.index).replace(/[;\s]+$/, (trimmed) => trimmed.includes("\n") ? "\n" : "");
-      pending = pending.slice(match.index + match[0].length);
-      suppressing = true;
-    }
-
-    return output;
-  }
-
-  function flush() {
-    if (suppressing) {
-      pending = "";
-      suppressing = false;
-      return "";
-    }
-    const output = pending;
-    pending = "";
-    return output;
-  }
-
-  return { push, flush };
-}
-
-function stripInternalInstructionLeaks(text) {
-  const sanitizer = createInternalInstructionTextSanitizer();
-  return (sanitizer.push(text) + sanitizer.flush()).trimStart();
-}
-
-function shouldSanitizeStringKey(key) {
-  return TEXT_PAYLOAD_KEYS.has(String(key || ""));
-}
-
-function sanitizeInternalInstructionValue(value, sanitizer, key = "") {
-  if (typeof value === "string") {
-    if (!shouldSanitizeStringKey(key)) return value;
-    return sanitizer.push(value);
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeInternalInstructionValue(item, sanitizer));
-  }
-  if (value && typeof value === "object") {
-    const result = {};
-    for (const [childKey, childValue] of Object.entries(value)) {
-      result[childKey] = sanitizeInternalInstructionValue(childValue, sanitizer, childKey);
-    }
-    return result;
-  }
-  return value;
-}
-
-function sanitizeInternalInstructionJsonText(text) {
-  const sanitizer = createInternalInstructionTextSanitizer();
-  try {
-    const parsed = JSON.parse(String(text || ""));
-    const sanitized = sanitizeInternalInstructionValue(parsed, sanitizer);
-    sanitizer.flush();
-    return JSON.stringify(sanitized);
-  } catch {
-    return stripInternalInstructionLeaks(text);
-  }
-}
-
-function sanitizeInternalInstructionSseEvent(event, sanitizer) {
-  const lines = String(event || "").split(/\r?\n/);
-  const dataLines = [];
-  const otherLines = [];
-
-  for (const line of lines) {
-    if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
-    else if (line) otherLines.push(line);
-  }
-
-  if (dataLines.length === 0) return event;
-
-  const data = dataLines.join("\n");
-  if (data === "[DONE]" || data === "null") {
-    return [...otherLines, `data: ${data}`].join("\n");
-  }
-
-  try {
-    const parsed = JSON.parse(data);
-    const sanitized = sanitizeInternalInstructionValue(parsed, sanitizer);
-    return [...otherLines, `data: ${JSON.stringify(sanitized)}`].join("\n");
-  } catch {
-    return [...otherLines, `data: ${sanitizer.push(data)}`].join("\n");
-  }
-}
-
-function nextSseEventBoundary(text) {
-  const lf = text.indexOf("\n\n");
-  const crlf = text.indexOf("\r\n\r\n");
-  if (lf === -1) return crlf === -1 ? null : { index: crlf, length: 4 };
-  if (crlf === -1) return { index: lf, length: 2 };
-  return lf < crlf ? { index: lf, length: 2 } : { index: crlf, length: 4 };
-}
-
-function createInternalInstructionSseSanitizer(maxBufferBytes = MAX_SSE_BUFFER_BYTES) {
-  let buffer = "";
-  const sanitizer = createInternalInstructionTextSanitizer();
-
-  function push(chunk) {
-    buffer += String(chunk || "");
-    ensureBufferLimit(Buffer.byteLength(buffer), maxBufferBytes, "SSE buffer");
-    let output = "";
-
-    while (true) {
-      const boundary = nextSseEventBoundary(buffer);
-      if (!boundary) break;
-      const event = buffer.slice(0, boundary.index);
-      buffer = buffer.slice(boundary.index + boundary.length);
-      output += `${sanitizeInternalInstructionSseEvent(event, sanitizer)}\n\n`;
-    }
-
-    return output;
-  }
-
-  function flush() {
-    const output = buffer ? sanitizeInternalInstructionSseEvent(buffer, sanitizer) : "";
-    buffer = "";
-    sanitizer.flush();
-    return output;
-  }
-
-  return { push, flush };
-}
-
-function normalizeReasoningEffort(value, options = {}) {
-  const raw = String(value || "").trim().toLowerCase();
-  if (!raw) return "";
-  if (raw === "xhigh" || raw === "x-high" || raw === "extra-high" || raw === "extra_high") return "xhigh";
-  if (raw === "high") return options.preferXhigh ? "xhigh" : "high";
-  if (raw === "medium" || raw === "med") return "medium";
-  if (raw === "low") return "low";
-  return "";
-}
-
-function inferReasoningEffort(thinkingCfg, isThinkingModel, options = {}) {
-  const preferXhigh = options.preferXhigh !== false;
-  if (thinkingCfg) {
-    const budget = Number(thinkingCfg.thinkingBudget || 0);
-    const level  = String(thinkingCfg.thinkingLevel || "").toUpperCase();
-    if (level === "HIGH" || budget >= 10000) return preferXhigh ? "xhigh" : "high";
-    if (level === "MEDIUM" || budget >= 4000) return "medium";
-    if (level === "LOW"  || budget > 0) return "low";
-    if (thinkingCfg.includeThoughts) return "medium";
-  }
-  return isThinkingModel ? (preferXhigh ? "xhigh" : "high") : "";
-}
-
-function adaptiveGptModelForReasoning(modelName, reasoningEffort) {
-  const model = String(modelName || "").trim();
-  if (!model) return model;
-  return model.replace(/(^|[/@:+-])gpt-5\.5-xhigh$/i, "$1gpt-5.5");
-}
-
-function shouldUseReasoningEffort(thinkingCfg, isThinkingModel) {
-  return Boolean(thinkingCfg || isThinkingModel);
-}
-
-// Kiro / AWS CodeWhisperer provider detection.
-// 9router exposes Kiro-routed models under multiple prefixes depending on user config:
-//   - `kr/...`         (short alias)
-//   - `kiro/...`       (full provider name)
-// Match both case-insensitively. Bypassing this check causes the proxy to inject
-// `thinking` / `reasoning_effort` / `tools` into the upstream body, which Kiro rejects
-// with HTTP 400 "Improperly formed request".
-function isKiroProviderModel(modelName) {
-  return /^(kr|kiro)\//i.test(String(modelName || ""));
-}
-
-// Top-level fields Kiro accepts. Anything else (reasoning_effort, thinking,
-// generationConfig, tools, safetySettings, etc.) must be stripped.
-const KIRO_ALLOWED_TOP_LEVEL = new Set([
-  "model", "request", "contents", "messages",
-  "userAgent", "stream", "system", "systemInstruction",
-]);
-
-// JSON Schema type coercion for tool parameters.
-//
-// Some MCP servers emit schemas where keyword values are stringified — e.g.
-//   { "type": "integer", "default": "10", "minimum": "0" }
-// Antigravity forwards these tools verbatim. OpenAI Codex (gpt-5.5) validates
-// tool schemas in strict mode and rejects the call with:
-//   "Invalid schema for function '...': '10' is not of type 'integer'"
-//
-// We walk the schema tree and coerce values whose JSON type does not match the
-// declared `type`. This only touches schema metadata (default, enum, const,
-// minimum, maximum, multipleOf, examples) — never user request payloads.
-const SCHEMA_NUMERIC_KEYWORDS = new Set([
-  "default", "const", "minimum", "maximum",
-  "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
-]);
-const SCHEMA_NUMERIC_LIST_KEYWORDS = new Set(["enum", "examples"]);
-const SCHEMA_STRUCTURAL_KEYWORDS = new Set([
-  "properties", "patternProperties", "definitions", "$defs",
-]);
-const SCHEMA_NESTED_LIST_KEYWORDS = new Set([
-  "allOf", "anyOf", "oneOf", "prefixItems",
-]);
-const SCHEMA_NESTED_KEYWORDS = new Set([
-  "items", "additionalProperties", "not", "if", "then", "else", "contains",
-  "propertyNames", "unevaluatedItems", "unevaluatedProperties",
-]);
-
-function normalizeSchemaTypeName(value) {
-  // Gemini format uses uppercase ("INTEGER", "NUMBER"); JSON Schema uses lowercase.
-  return String(value || "").trim().toLowerCase();
-}
-
-function coerceScalarToSchemaType(value, type) {
-  if (value === null || value === undefined) return value;
-  const normalizedType = normalizeSchemaTypeName(type);
-
-  if (normalizedType === "integer") {
-    if (typeof value === "number" && Number.isInteger(value)) return value;
-    if (typeof value === "string" && /^-?\d+$/.test(value.trim())) {
-      const parsed = Number(value.trim());
-      if (Number.isInteger(parsed)) return parsed;
-    }
-    if (typeof value === "boolean") return value ? 1 : 0;
-    return value;
-  }
-
-  if (normalizedType === "number") {
-    if (typeof value === "number") return value;
-    if (typeof value === "string" && /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value.trim())) {
-      const parsed = Number(value.trim());
-      if (Number.isFinite(parsed)) return parsed;
-    }
-    if (typeof value === "boolean") return value ? 1 : 0;
-    return value;
-  }
-
-  if (normalizedType === "boolean") {
-    if (typeof value === "boolean") return value;
-    if (typeof value === "string") {
-      const lowered = value.trim().toLowerCase();
-      if (lowered === "true") return true;
-      if (lowered === "false") return false;
-    }
-    return value;
-  }
-
-  if (normalizedType === "string") {
-    if (typeof value === "string") return value;
-    if (typeof value === "number" || typeof value === "boolean") return String(value);
-    return value;
-  }
-
-  return value;
-}
-
-function coerceJsonSchemaTypes(node, depth = 0) {
-  if (!node || depth > 32) return node;
-  if (Array.isArray(node)) {
-    for (const item of node) coerceJsonSchemaTypes(item, depth + 1);
-    return node;
-  }
-  if (typeof node !== "object") return node;
-
-  const declaredType = Array.isArray(node.type)
-    ? node.type.find((t) => typeof t === "string")
-    : node.type;
-
-  if (declaredType) {
-    for (const key of SCHEMA_NUMERIC_KEYWORDS) {
-      if (key in node) node[key] = coerceScalarToSchemaType(node[key], declaredType);
-    }
-    for (const key of SCHEMA_NUMERIC_LIST_KEYWORDS) {
-      if (Array.isArray(node[key])) {
-        node[key] = node[key].map((item) => coerceScalarToSchemaType(item, declaredType));
-      }
-    }
-  }
-
-  for (const key of SCHEMA_STRUCTURAL_KEYWORDS) {
-    const child = node[key];
-    if (child && typeof child === "object" && !Array.isArray(child)) {
-      for (const propValue of Object.values(child)) coerceJsonSchemaTypes(propValue, depth + 1);
-    }
-  }
-  for (const key of SCHEMA_NESTED_LIST_KEYWORDS) {
-    if (Array.isArray(node[key])) {
-      for (const item of node[key]) coerceJsonSchemaTypes(item, depth + 1);
-    }
-  }
-  for (const key of SCHEMA_NESTED_KEYWORDS) {
-    const child = node[key];
-    if (child && typeof child === "object") coerceJsonSchemaTypes(child, depth + 1);
-  }
-
-  return node;
-}
-
-// Walk a request body and apply schema coercion to every tool definition.
-// Supports both Gemini format (request.tools[].functionDeclarations[].parameters)
-// and OpenAI format (tools[].function.parameters).
-function coerceToolSchemasInBody(body) {
-  if (!body || typeof body !== "object") return body;
-  const requestBody = body.request && typeof body.request === "object" ? body.request : body;
-
-  const toolBuckets = [requestBody.tools, body.tools].filter(Array.isArray);
-  for (const bucket of toolBuckets) {
-    for (const tool of bucket) {
-      if (!tool || typeof tool !== "object") continue;
-      // Gemini: { functionDeclarations: [{ name, parameters }] }
-      if (Array.isArray(tool.functionDeclarations)) {
-        for (const decl of tool.functionDeclarations) {
-          if (decl && decl.parameters) coerceJsonSchemaTypes(decl.parameters);
-        }
-      }
-      // OpenAI: { type: "function", function: { name, parameters } }
-      if (tool.function && tool.function.parameters) {
-        coerceJsonSchemaTypes(tool.function.parameters);
-      }
-      // Some adapters put parameters directly on the tool object.
-      if (tool.parameters) coerceJsonSchemaTypes(tool.parameters);
-    }
-  }
-  return body;
-}
-
-function sanitizeKiroRequestBody(body) {
-  if (!body || typeof body !== "object") return body;
-
-  // Kiro/AWS CodeWhisperer rejects these top-level fields with HTTP 400
-  // "Improperly formed request":
-  //   - `reasoning_effort` (OpenAI-style) and `thinking` (Anthropic-style):
-  //     both are duplicated by the model name suffix `-thinking-agentic`.
-  //   - any unknown top-level metadata field.
-  // We DO keep `tools` / `toolConfig`. Those carry MCP tool definitions
-  // Antigravity sent so the model can issue `toolUseEvent`s. Stripping them
-  // forces the model to fabricate `<tool_call>` text instead of structured
-  // tool calls, which is exactly what the user observed in chat.
-  delete body.reasoning_effort;
-  delete body.thinking;
-
-  const requestBody = body.request && typeof body.request === "object" ? body.request : body;
-
-  // Inside generationConfig, Kiro only rejects `thinkingConfig` (Gemini's way
-  // of asking for reasoning). Keep temperature/topP/maxOutputTokens/etc — Kiro
-  // ignores anything it does not understand without 400'ing as long as the
-  // shape is valid.
-  for (const cfg of [requestBody.generationConfig, body !== requestBody ? body.generationConfig : null]) {
-    if (cfg && typeof cfg === "object") {
-      delete cfg.thinkingConfig;
-    }
-  }
-
-  // safetySettings is a Vertex/Gemini concept and Kiro 400s on it. Drop only
-  // that — keep tools so MCP tool calling survives.
-  delete requestBody.safetySettings;
-  if (body !== requestBody) delete body.safetySettings;
-
-  // Keep top-level fields Kiro/9router actually use. We must keep `tools`,
-  // `toolConfig`, and `tool_config` here so the 9router translator sees the
-  // tool catalog when it converts the Gemini-style payload to Kiro events.
-  // We also keep `generationConfig` (with thinkingConfig already stripped
-  // above) for the flat-body shape; in nested-body shape it lives under
-  // `request` and is already handled there.
-  const KIRO_ALLOWED_TOP_LEVEL_KEEP = new Set([
-    "model", "request", "contents", "messages",
-    "userAgent", "stream", "system", "systemInstruction",
-    "tools", "toolConfig", "tool_config",
-    "generationConfig",
-  ]);
-  for (const key of Object.keys(body)) {
-    if (!KIRO_ALLOWED_TOP_LEVEL_KEEP.has(key)) delete body[key];
-  }
-
-  // 9router reads model from top-level body.model. A stale Gemini alias inside
-  // request.model confuses the Kiro adapter — drop it.
-  if (requestBody !== body) delete requestBody.model;
-
-  return body;
 }
 
 function summarizePartTypes(parts) {
@@ -870,17 +392,42 @@ function writeResponseChunk(res, chunk, reader = null) {
   });
 }
 
-async function streamSanitizedSseResponse(responseBody, res) {
+async function streamSanitizedSseResponse(responseBody, res, options = {}) {
   const reader = responseBody.getReader();
   const decoder = new TextDecoder();
   const sseSanitizer = createInternalInstructionSseSanitizer();
+  const idleTimeoutMs = Number.isFinite(Number(options.idleTimeoutMs))
+    ? Math.max(0, Number(options.idleTimeoutMs))
+    : 2 * 60 * 1000;
+  const requestId = options.requestId || "";
+  const model = options.model || "";
+  let idleTimer = null;
+  const clearIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = null;
+  };
+  const armIdleTimer = () => {
+    clearIdleTimer();
+    if (idleTimeoutMs <= 0) return;
+    idleTimer = setTimeout(() => {
+      const message = `upstream SSE idle timeout after ${idleTimeoutMs}ms`;
+      logProxyError({ message, requestId, model });
+      try { reader.cancel(new Error(message)).catch(() => {}); } catch (_) { /* ignore */ }
+      if (isResponseWritable(res)) res.end();
+    }, idleTimeoutMs);
+    if (typeof idleTimer.unref === "function") idleTimer.unref();
+  };
+
   try {
+    armIdleTimer();
     while (isResponseWritable(res)) {
       const { done, value } = await reader.read();
       if (done) break;
+      armIdleTimer();
       const safeChunk = sseSanitizer.push(decoder.decode(value, { stream: true }));
       if (safeChunk) await writeResponseChunk(res, safeChunk, reader);
     }
+    clearIdleTimer();
     if (!isResponseWritable(res)) return;
 
     const decodedTail = decoder.decode();
@@ -892,6 +439,7 @@ async function streamSanitizedSseResponse(responseBody, res) {
     if (tail) await writeResponseChunk(res, tail, reader);
     if (isResponseWritable(res)) res.end();
   } finally {
+    clearIdleTimer();
     reader.releaseLock();
   }
 }
@@ -918,6 +466,14 @@ async function readBoundedTextResponse(responseBody, maxBytes = MAX_RESPONSE_BOD
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── HOST_REWRITE: bypass rate-limit 429 on PROD cloudcode-pa ─────────────────
+// PROD cloudcode-pa.googleapis.com is rate-limited (429). The daily-cloudcode-pa
+// (dev endpoint) accepts the same body+token. Only applied to chat endpoints;
+// auth/login requests must use the original host.
+const HOST_REWRITE = {
+  "cloudcode-pa.googleapis.com": "daily-cloudcode-pa.googleapis.com",
+};
+
 async function runProxy(options) {
   const targetHosts = targetHostsFrom(options);
   const cert = certPaths();
@@ -939,7 +495,9 @@ async function runProxy(options) {
   }
 
   const cachedTargetIPs = new Map();
-  const IP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 phút – tránh stale IP khi Google rotate địa chỉ
+  const IP_CACHE_TTL_MS = 60 * 1000; // short TTL: network changes/sleep can stale resolved Google IPs
+  const PASSTHROUGH_TIMEOUT_MS = Math.max(1000, Number(process.env.MITM_PASSTHROUGH_TIMEOUT_MS || 60_000));
+  const PASSTHROUGH_IDLE_TIMEOUT_MS = Math.max(1000, Number(process.env.MITM_PASSTHROUGH_IDLE_TIMEOUT_MS || 90_000));
 
   function pruneTargetIPCache(now = Date.now()) {
     for (const [host, cached] of cachedTargetIPs.entries()) {
@@ -953,19 +511,14 @@ async function runProxy(options) {
     const cached = cachedTargetIPs.get(targetHost);
     if (cached && Date.now() - cached.ts < IP_CACHE_TTL_MS) return cached.ip;
 
-    const resolver = new dns.Resolver();
-    resolver.setServers(["8.8.8.8"]);
-    const resolve4 = promisify(resolver.resolve4.bind(resolver));
-    const resolve6 = promisify(resolver.resolve6.bind(resolver));
-
     let ip;
     try {
-      const addresses = await resolve4(targetHost);
+      const addresses = await dns.promises.resolve4(targetHost);
       if (!addresses || addresses.length === 0) throw new Error("empty A record");
       ip = addresses[0];
     } catch {
-      // Không có A record – thử AAAA (Google đôi khi dùng IPv6-only endpoint)
-      const addresses = await resolve6(targetHost);
+      // Không có A record – thử AAAA (Google đôi khi dùng IPv6-only endpoint).
+      const addresses = await dns.promises.resolve6(targetHost);
       if (!addresses || addresses.length === 0) {
         throw new Error(`Cannot resolve ${targetHost}: no A or AAAA record`);
       }
@@ -976,6 +529,114 @@ async function runProxy(options) {
     cachedTargetIPs.set(targetHost, { ip, ts: Date.now() });
     return ip;
   }
+
+  // ── ALPN negotiation cache ──────────────────────────────────────────────────
+  // Try HTTP/2 first (like browsers / mitmweb), fallback HTTP/1.1.
+  // Google backend prefers HTTP/2; using H1 only may cause issues.
+  const alpnCache = new Map();
+  async function negotiateAlpn(host) {
+    const cached = alpnCache.get(host);
+    if (cached && Date.now() - cached.ts < IP_CACHE_TTL_MS) return cached.proto;
+    const ip = await resolveTargetIP(host);
+    return new Promise((resolve, reject) => {
+      const socket = tls.connect({
+        host: ip, port: 443, servername: host,
+        ALPNProtocols: ["h2", "http/1.1"], rejectUnauthorized: false,
+      }, () => {
+        const proto = socket.alpnProtocol || "http/1.1";
+        alpnCache.set(host, { proto, ts: Date.now() });
+        socket.end();
+        resolve(proto);
+      });
+      socket.once("error", reject);
+      socket.setTimeout(5000, () => { socket.destroy(new Error("ALPN timeout")); });
+    });
+  }
+
+  // ── HTTP/2 passthrough ─────────────────────────────────────────────────────
+  async function passthroughHttp2(req, res, bodyForForwarding, headersForForwarding, targetHost) {
+    const targetIP = await resolveTargetIP(targetHost);
+    const h2Headers = {};
+    for (const [k, v] of Object.entries(headersForForwarding)) {
+      const lk = k.toLowerCase();
+      if (lk === "host" || lk === "connection" || lk === "keep-alive" ||
+          lk === "transfer-encoding" || lk === "upgrade" || lk === "proxy-connection") continue;
+      h2Headers[lk] = v;
+    }
+    h2Headers[":method"] = req.method;
+    h2Headers[":path"] = req.url;
+    h2Headers[":scheme"] = "https";
+    h2Headers[":authority"] = targetHost;
+
+    return new Promise((resolve) => {
+      const client = http2.connect(`https://${targetHost}`, {
+        createConnection: () => tls.connect({
+          host: targetIP, port: 443, servername: targetHost,
+          ALPNProtocols: ["h2"], rejectUnauthorized: false,
+        }),
+      });
+      client.once("error", (e) => {
+        logProxyError({ message: `h2 client error: ${e.message}`, targetHost });
+        if (!res.headersSent) res.writeHead(502);
+        if (!res.writableEnded) res.end("Bad Gateway");
+        try { client.close(); } catch { /* ignore */ }
+        resolve();
+      });
+
+      const stream = client.request(h2Headers, { endStream: bodyForForwarding.length === 0 });
+      const timeout = setTimeout(() => {
+        logProxyError({ message: `h2 passthrough timeout after ${PASSTHROUGH_TIMEOUT_MS}ms`, targetHost });
+        try { stream.close(http2.constants.NGHTTP2_CANCEL); } catch { /* ignore */ }
+        try { client.close(); } catch { /* ignore */ }
+        if (!res.headersSent) res.writeHead(504);
+        if (!res.writableEnded) res.end("Gateway Timeout");
+        resolve();
+      }, PASSTHROUGH_TIMEOUT_MS);
+      if (typeof timeout.unref === "function") timeout.unref();
+      const clearTimeoutOnce = () => clearTimeout(timeout);
+      req.once("close", () => {
+        try { stream.close(http2.constants.NGHTTP2_CANCEL); } catch { /* ignore */ }
+        try { client.close(); } catch { /* ignore */ }
+        clearTimeoutOnce();
+      });
+      res.once("close", clearTimeoutOnce);
+      if (bodyForForwarding.length > 0) stream.end(bodyForForwarding);
+
+      stream.once("response", (responseHeaders) => {
+        clearTimeoutOnce();
+        const status = responseHeaders[":status"];
+        const outHeaders = {};
+        for (const [k, v] of Object.entries(responseHeaders)) {
+          if (k.startsWith(":")) continue;
+          if (k === "connection" || k === "keep-alive" || k === "transfer-encoding") continue;
+          outHeaders[k] = v;
+        }
+        res.writeHead(status, outHeaders);
+
+        stream.on("data", (chunk) => { res.write(chunk); });
+        stream.setTimeout(PASSTHROUGH_IDLE_TIMEOUT_MS, () => {
+          logProxyError({ message: `h2 passthrough idle timeout after ${PASSTHROUGH_IDLE_TIMEOUT_MS}ms`, targetHost });
+          try { stream.close(http2.constants.NGHTTP2_CANCEL); } catch { /* ignore */ }
+          if (!res.writableEnded) res.end();
+        });
+        stream.on("end", () => {
+          clearTimeoutOnce();
+          if (!res.writableEnded) res.end();
+          try { client.close(); } catch { /* ignore */ }
+          resolve();
+        });
+      });
+      stream.once("error", (e) => {
+        clearTimeoutOnce();
+        logProxyError({ message: `h2 stream error: ${e.message}`, targetHost });
+        if (!res.headersSent) res.writeHead(502);
+        if (!res.writableEnded) res.end();
+        try { client.close(); } catch { /* ignore */ }
+        resolve();
+      });
+    });
+  }
+
   async function passthrough(req, res, bodyBuffer) {
     try {
       const hostHeader = String(req.headers.host || "").trim().toLowerCase();
@@ -995,19 +656,47 @@ async function runProxy(options) {
         res.end("Loopback OAuth callback is not proxied. Remove localhost/127.0.0.1 from MITM DNS/proxy rules.");
         return;
       }
-      const targetHost = targetHosts.includes(requestHost) ? requestHost : primaryTargetHost(options);
+
+      // HOST_REWRITE: only rewrite host for chat endpoints — daily-cloudcode-pa
+      // rejects auth/login requests but accepts chat with same body+token,
+      // and the PROD endpoint is rate-limited (429).
+      const originalHost = requestHost || primaryTargetHost(options);
+      const isChatEndpoint = isChatRequestUrl(req.url);
+      const targetHost = isChatEndpoint ? (HOST_REWRITE[originalHost] || originalHost) : originalHost;
+
+      // Antigravity IDE version override: rewrite User-Agent + body.metadata.ideVersion
+      // to a known-good version so upstream AG 2.x backend accepts the request.
+      const versionOverride = applyAntigravityIdeVersionOverride(bodyBuffer, req.headers);
+      const bodyForForwarding = versionOverride.bodyBuffer;
+      const headersForForwarding = { ...versionOverride.headers, host: targetHost };
+      if (bodyForForwarding !== bodyBuffer) {
+        headersForForwarding["content-length"] = String(bodyForForwarding.length);
+      }
+
       const targetIP = await resolveTargetIP(targetHost);
       const requestPath = safeRequestPath(req.url);
+
+      // ALPN negotiate: try HTTP/2 first (like browsers/mitmweb), fallback HTTP/1.1
+      try {
+        const proto = await negotiateAlpn(targetHost);
+        if (proto === "h2") {
+          return await passthroughHttp2(req, res, bodyForForwarding, headersForForwarding, targetHost);
+        }
+      } catch {
+        // ALPN negotiation failed — fallback to HTTP/1.1
+      }
 
       const forwardReq = https.request({
         hostname: targetIP,
         port: 443,
         path: req.url,
         method: req.method,
-        headers: { ...req.headers, host: targetHost },
+        headers: headersForForwarding,
         servername: targetHost,
         rejectUnauthorized: false,
+        timeout: PASSTHROUGH_TIMEOUT_MS,
       }, (forwardRes) => {
+        forwardReq.setTimeout(PASSTHROUGH_IDLE_TIMEOUT_MS);
         const collectAndSend = ({ shouldLog = false } = {}) => {
           const chunks = [];
           let total = 0;
@@ -1025,6 +714,9 @@ async function runProxy(options) {
               const modelSummary = isModelBootstrapMergeRequest(req.url)
                 ? summarizeAntigravityModelsResponse(raw, forwardRes.headers)
                 : "";
+              const quotaSummary = isAccountQuotaRequest(req.url)
+                ? `quota_response_bytes=${raw.length}`
+                : "";
               logPassthroughResponse({
                 req,
                 statusCode: forwardRes.statusCode,
@@ -1033,7 +725,7 @@ async function runProxy(options) {
                 raw,
                 headers: forwardRes.headers,
                 bodyBuffer,
-                extra: `bytes=${raw.length}${modelSummary ? ` ${modelSummary}` : ""}`,
+                extra: `bytes=${raw.length}${modelSummary ? ` ${modelSummary}` : ""}${quotaSummary ? ` ${quotaSummary}` : ""}`,
               });
             }
             res.writeHead(forwardRes.statusCode, forwardRes.headers);
@@ -1057,13 +749,20 @@ async function runProxy(options) {
         forwardRes.pipe(res);
       });
 
+      forwardReq.on("timeout", () => {
+        logProxyError({ message: `passthrough timeout after ${PASSTHROUGH_IDLE_TIMEOUT_MS}ms`, method: req.method, targetHost, requestPath });
+        forwardReq.destroy(new Error(`passthrough timeout after ${PASSTHROUGH_IDLE_TIMEOUT_MS}ms`));
+      });
+      req.once("close", () => {
+        if (!forwardReq.destroyed) forwardReq.destroy(new Error("client closed passthrough request"));
+      });
       forwardReq.on("error", (err) => {
         logProxyError({ message: `passthrough ${err.message}`, method: req.method, targetHost, requestPath });
-        if (!res.headersSent) res.writeHead(502);
-        res.end("Bad Gateway");
+        if (!res.headersSent) res.writeHead(err.message.includes("timeout") ? 504 : 502);
+        if (!res.writableEnded) res.end(err.message.includes("timeout") ? "Gateway Timeout" : "Bad Gateway");
       });
 
-      if (bodyBuffer.length > 0) forwardReq.write(bodyBuffer);
+      if (bodyForForwarding.length > 0) forwardReq.write(bodyForForwarding);
       forwardReq.end();
     } catch (error) {
       logProxyError({ message: `passthrough ${error.message}` });
@@ -1073,6 +772,11 @@ async function runProxy(options) {
   }
 
   async function intercept(req, res, bodyBuffer, mappedEntry, requestedModel) {
+    // Declared at function scope so the catch block below can detach the
+    // res "close" listener even when an error is thrown after it was attached.
+    // (A const inside the try block is out of scope in catch, so its cleanup
+    // guard would silently never run and the listener would leak.)
+    let abortUpstream = null;
     try {
       let body;
       try {
@@ -1329,10 +1033,6 @@ async function runProxy(options) {
       };
       try {
         appendRecentRequestLog(requestLogEntry);
-        fs.appendFileSync(
-          "/tmp/mitm-antigravity-upstream-summary.log",
-          `${requestLogEntry.ts} requestId=${requestLogEntry.id} model=${targetModel} ${requestLogEntry.summary}\n`,
-        );
       } catch (error) {
         logProxyError({ message: `recent request log failed: ${error.message}` });
       }
@@ -1350,7 +1050,7 @@ async function runProxy(options) {
       // Once 9router begins streaming, we must let it finish — aborting mid-stream
       // causes Antigravity to see a truncated response and retry indefinitely.
       let upstreamStarted = false;
-      const abortUpstream = () => {
+      abortUpstream = () => {
         if (res.writableEnded) return;
         if (upstreamStarted) return; // already streaming — don't abort
         if (controller && !controller.signal.aborted) {
@@ -1414,7 +1114,14 @@ async function runProxy(options) {
         }
 
         if (contentType.includes("text/event-stream")) {
-          await streamSanitizedSseResponse(response.body, res);
+          const streamIdleTimeoutMs = Number.isFinite(Number(options.streamIdleTimeoutMs))
+            ? Math.max(0, Number(options.streamIdleTimeoutMs))
+            : 2 * 60 * 1000;
+          await streamSanitizedSseResponse(response.body, res, {
+            idleTimeoutMs: streamIdleTimeoutMs,
+            requestId: requestLogEntry.id,
+            model: targetModel,
+          });
         } else {
           const raw = await readBoundedTextResponse(response.body);
           const safeBody = contentType.includes("json")
@@ -1426,17 +1133,11 @@ async function runProxy(options) {
         res.off("close", abortUpstream);
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         logProxyOk({ model: targetModel, reasoning: body.reasoning_effort || "", elapsedSeconds: elapsed });
-        try {
-          fs.appendFileSync(
-            "/tmp/mitm-antigravity-upstream-summary.log",
-            `${new Date().toISOString()} requestId=${requestLogEntry.id} OK model=${targetModel} elapsed=${elapsed}s writableEnded=${res.writableEnded} destroyed=${res.destroyed}\n`,
-          );
-        } catch (_) { /* best effort */ }
       } finally {
         if (timeoutId) clearTimeout(timeoutId);
       }
     } catch (error) {
-      if (typeof abortUpstream === "function") res.off("close", abortUpstream);
+      if (abortUpstream) res.off("close", abortUpstream);
       logProxyError({ message: error.message });
       if (!res.headersSent) res.writeHead(error.statusCode || 500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: { message: error.message, type: "mitm_error" } }));
@@ -1488,6 +1189,15 @@ async function runProxy(options) {
     }
 
     return intercept(req, res, bodyBuffer, effectiveEntry, model || modelAlias);
+  });
+
+  server.requestTimeout = Math.max(60_000, Number(process.env.MITM_SERVER_REQUEST_TIMEOUT_MS || 10 * 60 * 1000));
+  server.headersTimeout = Math.max(30_000, Number(process.env.MITM_SERVER_HEADERS_TIMEOUT_MS || 65_000));
+  server.keepAliveTimeout = Math.max(1000, Number(process.env.MITM_SERVER_KEEP_ALIVE_TIMEOUT_MS || 15_000));
+  server.timeout = Math.max(0, Number(process.env.MITM_SERVER_SOCKET_TIMEOUT_MS || 0));
+  server.on("clientError", (error, socket) => {
+    logProxyError({ message: `client socket error: ${error.message}` });
+    try { socket.destroy(); } catch { /* ignore */ }
   });
 
   // Listen + return a handle so the caller (CLI or GUI) can control lifecycle

@@ -52,6 +52,19 @@ function execPromise(command, { timeout = 30_000, maxBuffer = EXEC_DEFAULT_MAX_B
 
 async function isWindowsElevated() {
   if (!IS_WIN) return false;
+  // Primary: ask .NET whether the current token is in the Administrators role.
+  // This is far more reliable than `net session`, which depends on the Server
+  // service running and can throw for unrelated reasons (false "not elevated"
+  // → spurious extra UAC prompts).
+  try {
+    const stdout = await execPowerShell(
+      "[bool]([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"
+    );
+    if (/true/i.test(stdout)) return true;
+    if (/false/i.test(stdout)) return false;
+  } catch {
+    // Fall through to the legacy probe below.
+  }
   try {
     await execPromise("net session");
     return true;
@@ -124,7 +137,7 @@ function windowsCmdRedirectArguments(filePath, args, logPath) {
   return `/s /c "${command}"`;
 }
 
-function execWithSudo(command, password) {
+function execWithSudo(command, password, { interactive = true } = {}) {
   if (isRoot()) return execPromise(command);
   if (password) {
     return new Promise((resolve, reject) => {
@@ -137,6 +150,7 @@ function execWithSudo(command, password) {
       child.stdout.on("data", (d) => { stdout += d; });
       child.stderr.on("data", (d) => { stderr += d; });
 
+      child.on("error", (err) => reject(err));
       child.on("close", (code) => {
         if (code === 0) resolve(stdout);
         else reject(new Error(stderr || `Exit code ${code}`));
@@ -147,12 +161,44 @@ function execWithSudo(command, password) {
     });
   }
 
-  if (IS_MAC) {
-    const script = `do shell script ${JSON.stringify(command)} with administrator privileges`;
-    return execPromise(`osascript -e ${shellQuote(script)}`);
+  // No cached password and not root. Passive/background callers pass
+  // interactive:false so they reject here instead of popping an admin dialog.
+  // This is what stops macOS status-polling (port 443 owner lookup) from
+  // spawning random osascript password prompts while the proxy is stopped.
+  if (!interactive) {
+    const error = new Error("Elevation required but skipped (non-interactive).");
+    error.code = "ESUDO_NONINTERACTIVE";
+    return Promise.reject(error);
   }
 
-  return execPromise(`sudo sh -c ${shellQuote(command)}`);
+  if (IS_MAC) {
+    const script = `do shell script ${JSON.stringify(command)} with administrator privileges`;
+    // The native admin dialog blocks on user input. Keep a generous timeout so a
+    // user typing their password isn't cut off by execPromise's 30s default
+    // (which would kill osascript and make Stop/DNS buttons appear to "do nothing").
+    return execPromise(`osascript -e ${shellQuote(script)}`, { timeout: 120_000 });
+  }
+
+  return execPromise(`sudo sh -c ${shellQuote(command)}`, { timeout: 120_000 });
+}
+
+// Join multiple shell commands into a single `&&` chain. Empty/whitespace
+// fragments are dropped so optional steps can be conditionally included.
+// Pure + exported for unit testing.
+function composeSudoBatch(commands) {
+  const list = (Array.isArray(commands) ? commands : [commands])
+    .map((cmd) => String(cmd == null ? "" : cmd).trim())
+    .filter(Boolean);
+  return list.join(" && ");
+}
+
+// Run several privileged commands inside ONE elevated invocation = exactly one
+// osascript dialog (macOS) or one `sudo -S` call (when a password is supplied).
+// Used by the GUI to collapse cert+hosts+flush into a single prompt per action.
+function execSudoBatch(commands, { sudoPassword = "", interactive = true } = {}) {
+  const batch = composeSudoBatch(commands);
+  if (!batch) return Promise.resolve("");
+  return execWithSudo(batch, sudoPassword, { interactive });
 }
 
 function execPowerShell(script, { elevated = false, timeout } = {}) {
@@ -260,8 +306,10 @@ function execPowerShell(script, { elevated = false, timeout } = {}) {
 }
 
 module.exports = {
+  composeSudoBatch,
   execPowerShell,
   execPromise,
+  execSudoBatch,
   execWithSudo,
   elevatedPowerShellErrorMessage,
   isWindowsElevated,

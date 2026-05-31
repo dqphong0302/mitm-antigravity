@@ -15,7 +15,7 @@ const {
   LOOPBACK_IPV6,
 } = require("../config/constants");
 const { normalizeTargetHosts } = require("../config");
-const { execPowerShell, execWithSudo, isRoot, shellQuote } = require("../system");
+const { execPowerShell, execPromise, execWithSudo, isRoot, shellQuote } = require("../system");
 
 function usingCustomHostsFile() {
   return Boolean(process.env.MITM_HOSTS_FILE);
@@ -38,6 +38,15 @@ function canWriteHostsDirectly() {
 async function writeHostsFileContent(content, sudoPassword) {
   if (canWriteHostsDirectly()) {
     fs.writeFileSync(HOSTS_FILE, content);
+    if (IS_WIN) {
+      // We already had direct (admin) write access, so the elevated branch below
+      // never runs — which means its folded-in `ipconfig /flushdns` never runs
+      // either, and flushDns() is a deliberate no-op on Windows. Without this,
+      // an elevated Windows session would update the hosts file but leave the
+      // resolver cache stale, so DNS redirects wouldn't take effect until the
+      // cache expired. ipconfig /flushdns needs no elevation, so no extra UAC.
+      try { await execPromise("ipconfig /flushdns"); } catch { /* best effort */ }
+    }
     return;
   }
 
@@ -311,6 +320,12 @@ async function removeDNSEntries({ targetHosts, sudoPassword }) {
   };
 }
 
+// macOS DNS cache flush command. Exported so the GUI can fold it into a single
+// batched `execSudoBatch` call (one admin prompt for cert + hosts + flush).
+function macFlushDnsCommand() {
+  return "dscacheutil -flushcache && killall -HUP mDNSResponder || true";
+}
+
 async function flushDns(sudoPassword) {
   if (usingCustomHostsFile()) return;
   if (IS_WIN) {
@@ -319,7 +334,7 @@ async function flushDns(sudoPassword) {
     return;
   }
   if (IS_MAC) {
-    await execWithSudo("dscacheutil -flushcache && killall -HUP mDNSResponder || true", sudoPassword);
+    await execWithSudo(macFlushDnsCommand(), sudoPassword);
     return;
   }
   await execWithSudo("systemd-resolve --flush-caches 2>/dev/null || resolvectl flush-caches 2>/dev/null || true", sudoPassword);
@@ -339,6 +354,7 @@ module.exports = {
   hostsLineParts,
   hostsLineTargetMatches,
   isLoopbackIp,
+  macFlushDnsCommand,
   readHostsFileContent,
   removeDNSEntries,
   removeDNSEntry,

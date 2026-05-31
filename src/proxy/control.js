@@ -23,7 +23,6 @@ function normalizeProcessName(value) {
 }
 const {
   bootstrapMacProxyLaunchDaemon,
-  bootoutMacProxyLaunchDaemon,
   macLaunchAgentBootstrapCommand,
   macLaunchAgentBootoutCommand,
   macLaunchAgentDomain,
@@ -61,9 +60,11 @@ async function isPortListening(port, options = {}) {
     // fall through to sudo retry below for privileged ports
   }
 
-  // Privileged port without owner visible → retry under sudo if available.
+  // Privileged port without owner visible → retry under sudo. On macOS,
+  // execWithSudo falls back to the native administrator dialog when no cached
+  // password is supplied by the CLI/GUI.
   const portNum = Number(port);
-  if (portNum > 0 && portNum < 1024 && process.platform === "darwin" && options.sudoPassword) {
+  if (portNum > 0 && portNum < 1024 && process.platform === "darwin") {
     const pids = await pidsListeningOnPortUnix(port, options);
     return pids.length > 0;
   }
@@ -190,22 +191,45 @@ function portConflictHint(port) {
 }
 
 async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TARGET }) {
+  const { getSudoPassword, saveSudoPassword } = require("../config");
+  const effectiveSudoPassword = sudoPassword || getSudoPassword();
+
   if (await checkProxyHealth(port, targetHost)) {
+    if (effectiveSudoPassword) {
+      saveSudoPassword(effectiveSudoPassword);
+    }
     return { started: false, alreadyRunning: true, port };
   }
 
-  const opts = { sudoPassword };
+  const opts = { sudoPassword: effectiveSudoPassword };
   if (await isPortListening(port, opts)) {
     const owners = await getPortOwners(port, opts);
-    const ownerText = formatPortOwners(owners) || "unknown process";
-    const hint = portConflictHint(port);
-    const error = new Error(
-      `Port ${port} is already in use by ${ownerText}.\n${hint}`
-    );
-    error.code = "EADDRINUSE";
-    error.port = Number(port);
-    error.owners = owners;
-    throw error;
+    const isOurApp = owners.some((o) => /node|mitm-antigravity|mitm-ag/i.test(o.name) || o.name === "unknown");
+    if (isOurApp) {
+      appendLog("warn", `Port ${port} is occupied by an unresponsive proxy instance (${formatPortOwners(owners)}). Attempting to stop it...`);
+      try {
+        await stopProxyByPort({ sudoPassword: effectiveSudoPassword, port, targetHost });
+      } catch (err) {
+        appendLog("error", `Failed to stop unresponsive proxy instance: ${err.message}`);
+      }
+      for (let i = 0; i < 5; i += 1) {
+        if (!(await isPortListening(port, opts))) break;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    }
+
+    if (await isPortListening(port, opts)) {
+      const updatedOwners = await getPortOwners(port, opts);
+      const ownerText = formatPortOwners(updatedOwners) || "unknown process";
+      const hint = portConflictHint(port);
+      const error = new Error(
+        `Port ${port} is already in use by ${ownerText}.\n${hint}`
+      );
+      error.code = "EADDRINUSE";
+      error.port = Number(port);
+      error.owners = updatedOwners;
+      throw error;
+    }
   }
 
   const logPath = proxyLogPath();
@@ -252,14 +276,14 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
       await execPowerShell(psScript);
     }
   } else if (IS_MAC) {
-    await bootstrapMacProxyLaunchDaemon({ sudoPassword, port, logPath });
+    await bootstrapMacProxyLaunchDaemon({ sudoPassword: effectiveSudoPassword, port, logPath });
   } else {
     const innerCommand = [
       `cd ${shellQuote(runtimeDir())}`,
       `HOME=${shellQuote(os.homedir())} MITM_APP_DIR=${shellQuote(appDir())} exec ${proxyStartShellCommand(["--port", String(port)])}`,
     ].join(" && ");
     const command = `nohup sh -c ${shellQuote(innerCommand)} >> ${shellQuote(logPath)} 2>&1 < /dev/null &`;
-    await execWithSudo(command, sudoPassword);
+    await execWithSudo(command, effectiveSudoPassword);
   }
 
   if (!(await waitForProxyHealth(port, targetHost))) {
@@ -279,6 +303,10 @@ async function startProxyDetached({ sudoPassword, port, targetHost = DEFAULT_TAR
     throw new Error(`Proxy did not start on port ${port}.\n${hints.join("\n")}`);
   }
 
+  if (effectiveSudoPassword) {
+    saveSudoPassword(effectiveSudoPassword);
+  }
+
   return { started: true, alreadyRunning: false, port, logPath };
 }
 
@@ -290,8 +318,7 @@ async function pidsListeningOnPortUnix(port, options = {}) {
   const portNum = Number(port);
   const isPrivileged = portNum > 0 && portNum < 1024;
   const tryWithSudo = isPrivileged
-    && process.platform === "darwin"
-    && Boolean(options.sudoPassword);
+    && process.platform === "darwin";
 
   try {
     const stdout = await execPromise(`lsof -ti tcp:${portNum} -sTCP:LISTEN 2>/dev/null || true`);
@@ -301,11 +328,15 @@ async function pidsListeningOnPortUnix(port, options = {}) {
     if (!tryWithSudo) return [];
   }
 
-  // Fallback: ask sudo for the privileged port owner.
+  // Fallback: ask sudo for the privileged port owner. Passive callers (status
+  // polling, health checks) leave options.interactive unset, so execWithSudo
+  // rejects instead of popping an osascript dialog — this is what stops the
+  // "random password prompt while proxy is stopped" bug on macOS.
   try {
     const stdout = await execWithSudo(
       `lsof -ti tcp:${portNum} -sTCP:LISTEN`,
-      options.sudoPassword
+      options.sudoPassword,
+      { interactive: options.interactive === true }
     );
     return parsePidsFromOutput(stdout);
   } catch (_) {
@@ -362,10 +393,34 @@ function parsePidsFromOutput(stdout) {
 }
 
 function windowsStopProxyScript(port) {
+  const p = Number(port);
   return [
-    `$p = Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`,
+    `$p = Get-NetTCPConnection -LocalPort ${p} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`,
+    // Fallback when Get-NetTCPConnection misbehaves (some hosts/policies): parse
+    // netstat for the LISTENING PID. Mirrors the find-path fallback so Stop and
+    // Force-Kill actually work everywhere, not just where the cmdlet is healthy.
+    `if (-not $p) { $p = @(netstat -ano -p tcp | Select-String -Pattern ':${p}\\s+\\S+\\s+LISTENING\\s+(\\d+)' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -Unique) }`,
     `if ($p) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }`,
   ].join("; ");
+}
+
+// Single elevated shell script for macOS privileged-port teardown. Running the
+// whole sequence (bootout launchd → TERM → KILL) in ONE execWithSudo means the
+// user sees exactly one admin dialog for a Stop/Force-Kill, instead of one per
+// step. Under root, lsof can see the owner of port <1024 that non-root cannot.
+function macStopAndKillScript(port, { removePlist = false, plistPath, plistExists = false } = {}) {
+  const p = Number(port);
+  const steps = [];
+  if (plistExists && plistPath) {
+    steps.push(`/bin/launchctl bootout system ${shellQuote(plistPath)} >/dev/null 2>&1 || true`);
+    if (removePlist) steps.push(`/bin/rm -f ${shellQuote(plistPath)}`);
+  }
+  steps.push(`__pids=$(lsof -ti tcp:${p} -sTCP:LISTEN 2>/dev/null || true)`);
+  steps.push(`if [ -n "$__pids" ]; then kill -TERM $__pids 2>/dev/null || true; fi`);
+  steps.push(`sleep 1`);
+  steps.push(`__pids=$(lsof -ti tcp:${p} -sTCP:LISTEN 2>/dev/null || true)`);
+  steps.push(`if [ -n "$__pids" ]; then kill -KILL $__pids 2>/dev/null || true; fi`);
+  return steps.join("\n");
 }
 
 function pidStillAlive(pid) {
@@ -406,9 +461,20 @@ async function killPidsUnix(pids, sudoPassword) {
 
 // removePlist: truyền true khi muốn full cleanup (Stop & Remove DNS).
 // Nếu false, chỉ stop cho session này – proxy vẫn auto-start sau reboot (via LaunchDaemon).
-async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET, removePlist = false }) {
-  const opts = { sudoPassword };
-  if (!(await checkProxyHealth(port, targetHost)) && !(await isPortListening(port, opts))) {
+async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET, removePlist = false, force = false }) {
+  if (removePlist) {
+    try {
+      const { cleanAntigravityNodeTrust } = require("../cert");
+      await cleanAntigravityNodeTrust();
+    } catch (error) {
+      appendLog("warn", "Failed to clean node trust on stop", { message: error.message });
+    }
+  }
+
+  // Reads stay non-interactive: never prompt just to check whether the port is
+  // still bound. Only the explicit teardown below may prompt (once).
+  const opts = { sudoPassword, interactive: false };
+  if (!force && !(await checkProxyHealth(port, targetHost)) && !(await isPortListening(port, opts))) {
     return { stopped: false, wasRunning: false, port };
   }
 
@@ -417,18 +483,23 @@ async function stopProxyByPort({ sudoPassword, port, targetHost = DEFAULT_TARGET
     // Get-NetTCPConnection từ non-elevated có thể thấy port, nhưng Stop-Process cần admin.
     // → Gộp find + kill vào 1 elevated script = 1 UAC prompt duy nhất.
     await execPowerShell(windowsStopProxyScript(port), { elevated: !(await isWindowsElevated()) });
-  } else {
-    if (IS_MAC && Number(port) < 1024 && fs.existsSync(macProxyLaunchDaemonPath())) {
-      // removePlist=true (Stop & Remove DNS): xóa plist để proxy không auto-start sau reboot
-      // removePlist=false (Stop Proxy tạm thời): giữ plist, proxy vẫn tự bật lại sau reboot
-      await bootoutMacProxyLaunchDaemon(sudoPassword, { removePlist }).catch((error) => {
-        appendLog("warn", "Failed to unload proxy LaunchDaemon before PID kill", { message: error.message });
-      });
-      for (let i = 0; i < 5; i += 1) {
-        if (!(await isPortListening(port, opts))) return { stopped: true, wasRunning: true, port };
-        await new Promise((resolve) => setTimeout(resolve, 200));
-      }
+  } else if (IS_MAC && Number(port) < 1024) {
+    // One elevated script = one osascript prompt for the entire teardown:
+    // bootout launchd (+ optional plist removal) then TERM/KILL any listener
+    // still holding the privileged port. Replaces the old multi-prompt path.
+    const plistPath = macProxyLaunchDaemonPath();
+    const script = macStopAndKillScript(port, {
+      removePlist,
+      plistPath,
+      plistExists: fs.existsSync(plistPath),
+    });
+    try {
+      await execWithSudo(script, sudoPassword, { interactive: true });
+    } catch (error) {
+      appendLog("warn", "macOS stop/kill script failed", { message: error.message });
     }
+  } else {
+    // Linux, or macOS unprivileged ports (>=1024) where non-root lsof works.
     const pids = await pidsListeningOnPortUnix(port, opts);
     if (pids.length === 0) return { stopped: false, wasRunning: false, port };
     await killPidsUnix(pids, sudoPassword);

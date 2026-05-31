@@ -1,1 +1,0 @@
-["\\\\?\\C:\\Users\\Phong-NUC\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\tauri-2.10.1\\scripts\\bundle.global.js","\\\\?\\C:\\Users\\Phong-NUC\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\tauri-plugin-updater-2.10.1\\api-iife.js"]

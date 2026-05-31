@@ -51,6 +51,7 @@ const {
   enableAutoStart,
   formatPortOwners,
   getPortOwners,
+  isPortListening,
   stopProxyByPort,
 } = require("../proxy/control");
 const { getProxyManager } = require("../proxy/manager");
@@ -137,7 +138,7 @@ async function reloadProxyAfterConfigSave(previousConfig, nextConfig, body, opti
 
 // Windows: gộp cert install + hosts write + DNS flush vào 1 PowerShell elevated = 1 UAC prompt.
 // Trả về { cert, dns } giống như installCert và addDNSEntries riêng lẻ.
-async function applyWindowsSetup({ certCaPath, targetHosts, remoteHost, remoteIp }) {
+async function applyWindowsSetup({ certCaPath, targetHost, targetHosts, remoteHost, remoteIp }) {
   const { resolveRemoteIP } = require("../dns");
   // Tính IP cần redirect (nếu không có remoteIp, resolve từ remoteHost)
   let ip = remoteIp;
@@ -150,17 +151,79 @@ async function applyWindowsSetup({ certCaPath, targetHosts, remoteHost, remoteIp
   const entries    = dnsEntriesForHosts(targetHosts, ip);
   const currentContent = readHostsFileContent();
   const { content: nextContent, replacedExisting } = applyDnsEntriesToHostsContent(currentContent, entries);
-
-  // 1 elevated PowerShell: cert + (hosts nếu cần thay đổi)
   const hostsChanged = nextContent !== currentContent;
+
+  // Skip the elevated certutil step when the CA is already trusted, so a
+  // fully-configured machine gets NO UAC prompt on a repeat Start/DNS click.
+  // This mirrors applyMacSetup's `if (!certInstalled)` guard — previously the
+  // Windows path always ran certutil -addstore (one UAC per click) while macOS
+  // did not, which is exactly the "không ổn định" asymmetry. checkCertInstalled
+  // is a non-elevated cert-store read, so it never prompts on its own.
+  const certInstalled = await checkCertInstalled(certCaPath, targetHost || targetHosts[0]);
+
+  // 1 elevated PowerShell: cert (nếu chưa trust) + hosts (nếu cần thay đổi).
+  // Nếu cả hai đều không cần → batch helper bỏ qua, không pop UAC.
   await windowsBatchInstallCertAndHosts({
     certPath:     certCaPath,
+    installCert:  !certInstalled,
     hostsContent: hostsChanged ? nextContent : null,
     hostsFile:    hostsChanged ? HOSTS_FILE : null,
   });
 
   return {
-    cert: { installed: true },
+    cert: { installed: !certInstalled },
+    dns:  { added: !replacedExisting, results: entries.map((e) => ({ targetHost: e.targetHost, added: true, ip: e.ip })) },
+  };
+}
+
+// macOS: collapse cert trust + hosts write + DNS flush into ONE elevated script
+// = exactly one osascript admin dialog per action (mirrors applyWindowsSetup).
+// Previously these ran as three separate execWithSudo calls = three prompts,
+// and a cancel mid-way left inconsistent state.
+async function applyMacSetup({ certCaPath, targetHost, targetHosts, remoteHost, remoteIp, sudoPassword }) {
+  const os = require("os");
+  const path = require("path");
+  const { resolveRemoteIP, macFlushDnsCommand } = require("../dns");
+  const { checkCertInstalled, macSystemTrustCommand } = require("../cert");
+  const { composeSudoBatch, execWithSudo, shellQuote } = require("../system");
+
+  let ip = remoteIp;
+  if (!ip && remoteHost) {
+    const addrs = await resolveRemoteIP(remoteHost);
+    ip = addrs[0];
+  }
+  if (!ip) ip = DEFAULT_REMOTE;
+
+  const entries = dnsEntriesForHosts(targetHosts, ip);
+  const currentContent = readHostsFileContent();
+  const { content: nextContent, replacedExisting } = applyDnsEntriesToHostsContent(currentContent, entries);
+  const hostsChanged = nextContent !== currentContent;
+
+  const certInstalled = await checkCertInstalled(certCaPath, targetHost);
+
+  const commands = [];
+  // Running as root via osascript, so System.keychain trust succeeds without the
+  // headless-context denial that the login-keychain fallback exists for.
+  if (!certInstalled) commands.push(macSystemTrustCommand(certCaPath));
+
+  let tempHosts = null;
+  if (hostsChanged) {
+    tempHosts = path.join(os.tmpdir(), `mitm-hosts-${process.pid}-${Date.now()}.tmp`);
+    fs.writeFileSync(tempHosts, nextContent, { mode: 0o600 });
+    commands.push(`cat ${shellQuote(tempHosts)} > ${shellQuote(HOSTS_FILE)}`);
+    commands.push(macFlushDnsCommand());
+  }
+
+  if (commands.length > 0) {
+    try {
+      await execWithSudo(composeSudoBatch(commands), sudoPassword, { interactive: true });
+    } finally {
+      if (tempHosts) { try { fs.unlinkSync(tempHosts); } catch { /* best effort */ } }
+    }
+  }
+
+  return {
+    cert: { installed: !certInstalled },
     dns:  { added: !replacedExisting, results: entries.map((e) => ({ targetHost: e.targetHost, added: true, ip: e.ip })) },
   };
 }
@@ -281,6 +344,15 @@ async function handleStartProxy(req, res, options) {
       remoteHost: cfg.remoteHost || options.remoteHost,
       remoteIp: cfg.remoteIp || options.remoteIp,
     }));
+  } else if (IS_MAC) {
+    ({ cert: certResult, dns: dnsResult } = await applyMacSetup({
+      certCaPath: cert.ca,
+      targetHost: targetHosts[0],
+      targetHosts,
+      remoteHost: cfg.remoteHost || options.remoteHost,
+      remoteIp: cfg.remoteIp || options.remoteIp,
+      sudoPassword,
+    }));
   } else {
     certResult = await installCert(cert.ca, targetHosts[0], sudoPassword);
     dnsResult = await addDNSEntries({
@@ -346,21 +418,29 @@ async function handleForceKillPort(req, res, options) {
   const cfg = readConfig();
   const sudoPassword = String(body.sudoPassword || "");
   const port = Number(cfg.port || options.port || 443);
-  // Privileged ports on macOS hide their owner from non-root lsof, so we must
-  // pass sudoPassword down so getPortOwners/stopProxyByPort can elevate.
-  const owners = await getPortOwners(port, { sudoPassword });
+  const targetHost = primaryTargetHost(cfg);
+  // Owner probe is non-interactive so it never adds a prompt of its own; the
+  // single admin/UAC prompt (if any) happens inside stopProxyByPort. On macOS
+  // privileged ports the owner is hidden from non-root lsof, so we still attempt
+  // the kill when the user explicitly asks even if the probe shows nothing.
+  const owners = await getPortOwners(port, { sudoPassword, interactive: false });
   const ownerText = formatPortOwners(owners);
-  const wasListening = owners.length > 0;
+  const macPrivileged = IS_MAC && port < 1024;
+  const healthy = await checkProxyHealth(port, targetHost);
+  const wasListening = owners.length > 0
+    || healthy
+    || (!macPrivileged && await isPortListening(port, { sudoPassword, interactive: false }));
   appendLog("info", "Force-kill port requested", { port, owner: ownerText || "(none)" });
-  if (!wasListening) {
+  if (!wasListening && !macPrivileged) {
     sendJson(res, 200, { killed: false, wasListening: false, port, owners: [] });
     return;
   }
-  // stopProxyByPort handles: LaunchDaemon bootout (macOS <1024) + kill PIDs
-  const result = await stopProxyByPort({ sudoPassword, port, targetHost: primaryTargetHost(cfg) });
+  // stopProxyByPort handles LaunchDaemon bootout (macOS <1024) + kill PIDs in a
+  // single elevated script (one prompt).
+  const result = await stopProxyByPort({ sudoPassword, port, targetHost, force: true });
   appendLog("info", "Force-kill port done", { port, stopped: result.stopped, owner: ownerText });
   invalidateStatusCache();
-  sendJson(res, 200, { killed: result.stopped, wasListening: true, port, owners, ownerText });
+  sendJson(res, 200, { killed: result.stopped, wasListening: wasListening || macPrivileged, port, owners, ownerText });
 }
 
 async function handleStopAndCleanup(req, res, options) {
@@ -437,6 +517,15 @@ async function handleApplyDns(req, res, options) {
       remoteHost: cfg.remoteHost || options.remoteHost,
       remoteIp: cfg.remoteIp || options.remoteIp,
     }));
+  } else if (IS_MAC) {
+    ({ cert: certResult, dns: dnsResult } = await applyMacSetup({
+      certCaPath: cert.ca,
+      targetHost: targetHosts[0],
+      targetHosts,
+      remoteHost: cfg.remoteHost || options.remoteHost,
+      remoteIp: cfg.remoteIp || options.remoteIp,
+      sudoPassword,
+    }));
   } else {
     certResult = await installCert(cert.ca, targetHosts[0], sudoPassword);
     dnsResult = await addDNSEntries({
@@ -497,7 +586,7 @@ async function collectGuiStatus(options, { deep = false, useCache = true } = {})
   const port = Number(cfg.port || options.port || 443);
   const proxyListening = await checkProxyHealth(port, targetHosts[0]);
   const shouldLoadPortOwners = deep || !proxyListening;
-  const portOwners = shouldLoadPortOwners ? await getPortOwners(port) : [];
+  const portOwners = shouldLoadPortOwners ? await getPortOwners(port, { interactive: false }) : [];
   const status = {
     proxyListening,
     dnsConfigured: dnsConfiguredForHosts(targetHosts, expectedIp),

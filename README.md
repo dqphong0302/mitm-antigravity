@@ -350,10 +350,16 @@ Useful options:
 
 ### CLI/backend binaries
 
+Build a backend binary for the current platform:
+
+```bash
+pnpm run build:pkg:native
+```
+
 Build binaries for all supported platforms:
 
 ```bash
-npm run build:pkg
+pnpm run build:pkg:all
 ```
 
 Output:
@@ -375,15 +381,15 @@ dist/settings.json
 Build the native desktop app for the current OS:
 
 ```bash
-npm run build
+pnpm run build
 ```
 
 Build the Windows installer specifically:
 
 ```bash
-npm run tauri:build:windows            # standard NSIS installer
-npm run tauri:build:windows:bootstrapper # includes WebView2 bootstrapper
-npm run tauri:build:windows:offline     # bundles WebView2 offline
+pnpm run tauri:build:windows              # standard NSIS installer
+pnpm run tauri:build:windows:bootstrapper # includes WebView2 bootstrapper
+pnpm run tauri:build:windows:offline      # bundles WebView2 offline
 ```
 
 On macOS, output is written under:
@@ -421,8 +427,16 @@ mitm-antigravity/
 │   │   └── index.js          /etc/hosts management (IPv4 + IPv6 blocking)
 │   ├── proxy/
 │   │   ├── index.js          HTTPS proxy server, intercept/passthrough
-│   │   ├── control.js        Start/stop/health-check, LaunchDaemon
+│   │   ├── manager.js        GUI-facing lifecycle controller
+│   │   ├── control.js        Detached start/stop/health-check, LaunchDaemon
 │   │   ├── helpers.js        Routing logic, retry, header building
+│   │   ├── ide-version.js    Antigravity IDE version normalization
+│   │   ├── internal-instruction-sanitizer.js  Response leak sanitizer
+│   │   ├── kiro.js           Kiro provider request normalization
+│   │   ├── memory.js         Proxy buffer limits and memory errors
+│   │   ├── reasoning.js      Reasoning effort helpers
+│   │   ├── request-log.js    Recent request preview logging
+│   │   ├── schema.js         Tool JSON Schema coercion
 │   │   └── logger.js         Compact log formatters (MAP/OK/ERR/RETRY)
 │   ├── models/
 │   │   ├── index.js          Model mapping, extraction, alias resolution
@@ -445,10 +459,13 @@ mitm-antigravity/
 │   └── installer-hooks.nsh   NSIS hooks (stop processes on install/uninstall)
 ├── scripts/
 │   ├── build-pkg.js          Cross-platform pkg builder
+│   ├── check-js.js           Syntax check scanner for JS files
 │   ├── copy-settings.js      Stripped settings for release
+│   ├── diagnose-bypass.js    Local proxy/DNS/mapping diagnostics
 │   ├── prepare-tauri.js      Tauri sidecar preparation
 │   ├── settings-sanitizer.js Remove secrets from settings
 │   ├── tauri-build-windows.js Windows-specific Tauri build
+│   ├── kill-windows-proxy.cmd / .ps1 Windows port cleanup helper
 │   ├── kill-mitm-ag.command  macOS: stop all MITM AG processes (double-click)
 │   ├── kill-mitm-ag.sh       Linux/macOS: stop backend process
 │   ├── kill-mitm-ag.bat      Windows: stop all MITM AG processes
@@ -458,9 +475,9 @@ mitm-antigravity/
 ```
 
 > [!NOTE]
-> The flat `src/*.js` files (`src/proxy.js`, `src/config.js`, etc.) are thin shims
-> that re-export from their new subdirectory locations for backward compatibility.
-> All active source code lives in the subdirectories above.
+> Generated outputs such as `dist/`, `src-tauri/target/`, `target-gui-test/`,
+> and packaged Tauri resources are intentionally ignored. Recreate them through
+> the build scripts instead of committing them.
 
 ---
 
@@ -469,19 +486,19 @@ mitm-antigravity/
 Run syntax checks:
 
 ```bash
-npm run check
+pnpm run check
 ```
 
 Run tests:
 
 ```bash
-npm test
+pnpm test
 ```
 
 Start Tauri development mode:
 
 ```bash
-npm run tauri:dev
+pnpm run tauri:dev
 ```
 
 ---

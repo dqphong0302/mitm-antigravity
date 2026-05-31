@@ -684,6 +684,32 @@ test("generateCert creates a CA-backed server certificate", async () => {
   assert.equal(mitm.certUsesLocalCA(cert.cert, cert.ca), true);
 });
 
+test("isCertExpired correctly identifies expired/active certs", async () => {
+  const cert = await mitm.generateCert(mitm.DEFAULT_TARGET_HOSTS, { force: true });
+  assert.equal(mitm.isCertExpired(cert.cert, 365 * 2), true); // expiring in 2 years is true
+  assert.equal(mitm.isCertExpired(cert.cert, 0), false); // not expired today
+  assert.equal(mitm.isCertExpired("nonexistent.crt"), true); // nonexistent is expired
+});
+
+test("sudo password encryption and decryption cache", () => {
+  const password = "my-secure-sudo-password-123";
+  mitm.saveSudoPassword(password);
+  const retrieved = mitm.getSudoPassword();
+  assert.equal(retrieved, password);
+
+  // Redact config hides the password cache
+  const config = mitm.readConfig();
+  const redacted = mitm.redactConfig(config);
+  assert.equal(redacted.sudoPasswordCache, "[REDACTED]");
+});
+
+test("cleanAntigravityNodeTrust runs without error", async () => {
+  await assert.doesNotReject(async () => {
+    await mitm.cleanAntigravityNodeTrust();
+  });
+});
+
+
 test("macOS system trust command installs CA with SSL and basic policies", () => {
   const command = mitm.macSystemTrustCommand("/tmp/mitm ca.crt");
 
@@ -767,6 +793,71 @@ test("Windows stop proxy script does not create an empty pipe", () => {
   assert.match(script, /Get-NetTCPConnection -LocalPort 443/);
   assert.match(script, /\| Select-Object -ExpandProperty OwningProcess -Unique/);
   assert.doesNotMatch(script, /;\s*\|/);
+});
+
+test("Windows stop proxy script falls back to netstat when the cmdlet finds nothing", () => {
+  const script = mitm.windowsStopProxyScript(8080);
+
+  assert.match(script, /if \(-not \$p\)/);
+  assert.match(script, /netstat -ano -p tcp/);
+  assert.match(script, /LISTENING/);
+  assert.match(script, /Stop-Process -Id \$_ -Force/);
+  assert.doesNotMatch(script, /;\s*\|/);
+});
+
+test("composeSudoBatch joins non-empty commands with && and drops blanks", () => {
+  assert.equal(mitm.composeSudoBatch(["a", "  ", "b", "", "c"]), "a && b && c");
+  assert.equal(mitm.composeSudoBatch("solo"), "solo");
+  assert.equal(mitm.composeSudoBatch([]), "");
+  assert.equal(mitm.composeSudoBatch([null, undefined, "x"]), "x");
+});
+
+test("execSudoBatch with no commands resolves without elevation", async () => {
+  const result = await mitm.execSudoBatch([], { interactive: false });
+  assert.equal(result, "");
+});
+
+test("windowsBatchInstallCertAndHosts is a no-op when cert is trusted and hosts unchanged", async () => {
+  // Regression: the Windows Start/DNS path used to run certutil -addstore in an
+  // elevated PowerShell on EVERY click (one UAC prompt each time), while macOS
+  // skipped the prompt when nothing changed. With installCert:false and no
+  // hostsContent there is nothing elevated to do, so the helper must return
+  // without ever calling execPowerShell. If it tried, this would throw on a
+  // non-Windows test host (no powershell.exe) instead of resolving cleanly.
+  await assert.doesNotReject(
+    mitm.windowsBatchInstallCertAndHosts({ certPath: "C:\\\\mitm\\\\ca.crt", installCert: false })
+  );
+});
+
+test("execWithSudo rejects without prompting when non-interactive and unprivileged", async () => {
+  const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
+  // On root the command would actually run; on Windows there is no sudo path.
+  if (isRoot || process.platform === "win32") return;
+  await assert.rejects(
+    () => mitm.execWithSudo("echo should-not-run", "", { interactive: false }),
+    (err) => err && err.code === "ESUDO_NONINTERACTIVE"
+  );
+});
+
+test("shouldAutoRestart requires consecutive misses and defers to launchd on macOS", () => {
+  const { shouldAutoRestart } = require("../src/proxy/manager");
+
+  // Below the miss threshold → never restart (ignores transient blips).
+  assert.equal(shouldAutoRestart({ mode: "detached", platform: "linux", consecutiveMisses: 1 }), false);
+  assert.equal(shouldAutoRestart({ mode: "detached", platform: "linux", consecutiveMisses: 2 }), false);
+  // At threshold on Linux/Windows → restart.
+  assert.equal(shouldAutoRestart({ mode: "detached", platform: "linux", consecutiveMisses: 3 }), true);
+  // Embedded proxy is app-owned even on macOS → restart.
+  assert.equal(shouldAutoRestart({ mode: "embedded", platform: "darwin", consecutiveMisses: 3 }), true);
+  // Detached on macOS is launchd-managed → never app-restart (no surprise prompt).
+  assert.equal(shouldAutoRestart({ mode: "detached", platform: "darwin", consecutiveMisses: 9 }), false);
+  // Detached on Windows from a NON-elevated GUI → defer: an app-restart would
+  // pop surprise background UAC prompts (stop + start), repeated across backoff.
+  assert.equal(shouldAutoRestart({ mode: "detached", platform: "win32", consecutiveMisses: 9, elevated: false }), false);
+  // Detached on Windows from an already-elevated GUI → restart silently (no UAC).
+  assert.equal(shouldAutoRestart({ mode: "detached", platform: "win32", consecutiveMisses: 3, elevated: true }), true);
+  // Idle → never.
+  assert.equal(shouldAutoRestart({ mode: "idle", platform: "linux", consecutiveMisses: 9 }), false);
 });
 
 test("Windows autostart task script uses highest privileges and normalized working directory", () => {
