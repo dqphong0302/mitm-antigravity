@@ -5,7 +5,9 @@ const { MB, ensureBufferLimit } = require("./memory");
 const DEFAULT_MAX_SSE_BUFFER_BYTES = 6 * MB;
 const INTERNAL_INSTRUCTION_MARKER_RE = /CRITICAL\s+INSTRUCTION\s+\d+\s*:/i;
 const INTERNAL_INSTRUCTION_PREFIX = "CRITICAL INSTRUCTION ";
-const TEXT_PAYLOAD_KEYS = new Set(["content", "delta", "message", "output_text", "text"]);
+// "reasoning" / "reasoning_content": OpenAI-compatible APIs (DeepSeek, some 9router paths)
+// return thinking in these fields. Must be stripped like "content" to prevent leak.
+const TEXT_PAYLOAD_KEYS = new Set(["content", "delta", "message", "output_text", "text", "reasoning", "reasoning_content"]);
 
 // ── <think> block stripper ────────────────────────────────────────────────────
 // claude-to-openai.js emits "<think>" / "</think>" as plain delta.content
@@ -258,9 +260,27 @@ function sanitizeInternalInstructionSseEvent(event, sanitizer, thinkStripper) {
     const parsed = JSON.parse(data);
     stripThoughtPartsFromGeminiPayload(parsed);
     const sanitized = sanitizeInternalInstructionValue(parsed, sanitizer, thinkStripper);
+
+    // DEBUG: ghi log ra tmp
+    if (data.includes("<think>")) {
+      const fs = require("fs");
+      try {
+        fs.appendFileSync("/tmp/mitm-think-leak.log", "IN: " + data + "\nOUT: " + JSON.stringify(sanitized) + "\n\n");
+      } catch {}
+    }
+
     return [...otherLines, `data: ${JSON.stringify(sanitized)}`].join("\n");
   } catch {
-    return [...otherLines, `data: ${sanitizer.push(thinkStripper ? thinkStripper.push(data) : data)}`].join("\n");
+    const rawOut = sanitizer.push(thinkStripper ? thinkStripper.push(data) : data);
+
+    if (data.includes("<think>")) {
+      const fs = require("fs");
+      try {
+        fs.appendFileSync("/tmp/mitm-think-leak.log", "IN_RAW: " + data + "\nOUT_RAW: " + rawOut + "\n\n");
+      } catch {}
+    }
+
+    return [...otherLines, `data: ${rawOut}`].join("\n");
   }
 }
 

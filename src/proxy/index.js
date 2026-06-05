@@ -404,6 +404,20 @@ async function streamSanitizedSseResponse(responseBody, res, options = {}) {
     : 2 * 60 * 1000;
   const requestId = options.requestId || "";
   const model = options.model || "";
+
+  // Raw SSE tee logger — ghi tối đa 32KB đầu tiên để debug thinking leak
+  const SSE_RAW_LOG = "/tmp/mitm-sse-raw.log";
+  let rawBytesLogged = 0;
+  const MAX_RAW_LOG_BYTES = 32 * 1024;
+  function logRawChunk(text) {
+    if (rawBytesLogged >= MAX_RAW_LOG_BYTES) return;
+    try {
+      const fs = require("fs");
+      const toWrite = text.slice(0, MAX_RAW_LOG_BYTES - rawBytesLogged);
+      fs.appendFileSync(SSE_RAW_LOG, toWrite);
+      rawBytesLogged += toWrite.length;
+    } catch { /* best effort */ }
+  }
   let idleTimer = null;
   const clearIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
@@ -427,7 +441,9 @@ async function streamSanitizedSseResponse(responseBody, res, options = {}) {
       const { done, value } = await reader.read();
       if (done) break;
       armIdleTimer();
-      const safeChunk = sseSanitizer.push(decoder.decode(value, { stream: true }));
+      const decoded = decoder.decode(value, { stream: true });
+      logRawChunk(decoded);
+      const safeChunk = sseSanitizer.push(decoded);
       if (safeChunk) await writeResponseChunk(res, safeChunk, reader);
     }
     clearIdleTimer();
@@ -937,8 +953,15 @@ async function runProxy(options) {
       // Antigravity gửi thinkingConfig theo Gemini API format; proxy phải map sang
       // format mà upstream router (thường OpenAI-compatible / Anthropic) hiểu.
       // Ưu tiên: (1) config mapping có reasoning_effort → giữ nguyên
-      //          (2) body có thinkingConfig → map thinkingBudget/thinkingLevel → reasoning_effort
+      //          (2) body có thinkingConfig VÀ target model là thinking model → infer reasoning_effort
       //          (3) model target kết thúc "-thinking" → mặc định bật thinking
+      //
+      // QUAN TRỌNG: KHÔNG forward thinkingConfig từ Antigravity IDE sang non-thinking models
+      // (vd: gpt5-5-fallback → kr/claude-sonnet-4.6-agentic). Antigravity đánh dấu tất cả
+      // models là supportsThinking:true nên IDE luôn gửi thinkingConfig, kể cả với models
+      // không cần thinking. Nếu forward thinkingConfig tới Kiro/9router:
+      //   → Kiro activate thinking → thinking leak ra chat (Bug 1)
+      //   → 9router đổi code path, tools không được forward đúng format → tool calls thành text (Bug 2)
       const thinkingCfg = (requestBody.generationConfig && requestBody.generationConfig.thinkingConfig)
         || (requestBody.config && requestBody.config.thinkingConfig)
         || (body.generationConfig && body.generationConfig.thinkingConfig)
@@ -949,12 +972,14 @@ async function runProxy(options) {
       // are both considered thinking models for reasoning effort inference.
       const isThinkingModel = targetModelName.endsWith("-thinking") || targetModelName.includes("-thinking-");
 
-      if (shouldUseReasoningEffort(thinkingCfg, isThinkingModel)) {
-        if (mappedEntry && mappedEntry.reasoning_effort) body.reasoning_effort = mappedEntry.reasoning_effort;
-        if (!body.reasoning_effort) {
-          body.reasoning_effort = inferReasoningEffort(thinkingCfg, isThinkingModel, { preferXhigh: true });
-          if (!body.reasoning_effort) delete body.reasoning_effort;
-        }
+      // Chỉ dùng thinkingCfg để infer reasoning_effort khi target model LÀ thinking model.
+      // Với non-thinking models, chỉ cho phép reasoning_effort nếu mapping config chỉ định tường minh.
+      if (mappedEntry && mappedEntry.reasoning_effort) {
+        body.reasoning_effort = mappedEntry.reasoning_effort;
+      } else if (shouldUseReasoningEffort(isThinkingModel ? thinkingCfg : null, isThinkingModel)) {
+        const inferred = inferReasoningEffort(thinkingCfg, isThinkingModel, { preferXhigh: true });
+        if (inferred) body.reasoning_effort = inferred;
+        else delete body.reasoning_effort;
       } else {
         delete body.reasoning_effort;
       }
@@ -965,6 +990,19 @@ async function runProxy(options) {
 
       if (body.model) {
         body.model = adaptiveGptModelForReasoning(body.model, body.reasoning_effort);
+      }
+
+      // Strip thinkingConfig khỏi generationConfig khi target model KHÔNG phải thinking model.
+      // Antigravity IDE gửi thinkingConfig cho tất cả models (supportsThinking:true), nhưng
+      // non-thinking models như gpt5-5-fallback không được phép forward field này tới 9router/Kiro.
+      if (!isThinkingModel) {
+        if (requestBody.generationConfig && requestBody.generationConfig.thinkingConfig) {
+          delete requestBody.generationConfig.thinkingConfig;
+        }
+        if (body.generationConfig && body.generationConfig !== requestBody.generationConfig
+            && body.generationConfig.thinkingConfig) {
+          delete body.generationConfig.thinkingConfig;
+        }
       }
 
       // Inject thinkingConfig vào Gemini body nếu chưa có.
@@ -978,8 +1016,8 @@ async function runProxy(options) {
           thinkingBudget: budget,
           includeThoughts: true,
         };
-      } else if (thinkingCfg && thinkingCfg.includeThoughts == null) {
-        // thinkingConfig có nhưng thiếu includeThoughts → thêm vào
+      } else if (isThinkingModel && thinkingCfg && thinkingCfg.includeThoughts == null) {
+        // thinkingConfig có nhưng thiếu includeThoughts → thêm vào (chỉ cho thinking models)
         thinkingCfg.includeThoughts = true;
       }
 
