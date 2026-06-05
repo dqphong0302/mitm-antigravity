@@ -364,6 +364,178 @@ test("createInternalInstructionSseSanitizer removes split leaked instructions", 
   }
 });
 
+test("stripThinkBlocks removes <think>...</think> from plain text", () => {
+  assert.equal(mitm.stripThinkBlocks("<think>reasoning here</think>answer"), "answer");
+  assert.equal(mitm.stripThinkBlocks("before<think>thinking</think>after"), "beforeafter");
+  assert.equal(mitm.stripThinkBlocks("no think blocks"), "no think blocks");
+  assert.equal(mitm.stripThinkBlocks("<think>only thinking</think>"), "");
+  assert.equal(mitm.stripThinkBlocks(""), "");
+  assert.equal(mitm.stripThinkBlocks(null), null);
+});
+
+test("createThinkBlockStripper handles <think> tags split across chunks", () => {
+  const stripper = mitm.createThinkBlockStripper();
+  // Tag split across chunk boundary
+  assert.equal(stripper.push("hello <thi"), "hello ");
+  assert.equal(stripper.push("nk>internal reasoning</think> world"), " world");
+  assert.equal(stripper.flush(), "");
+
+  // Multiple blocks in one stream
+  const s2 = mitm.createThinkBlockStripper();
+  assert.equal(s2.push("<think>a</think>text<think>b</think>end"), "textend");
+  assert.equal(s2.flush(), "");
+
+  // Unclosed think block at end — flush discards
+  const s3 = mitm.createThinkBlockStripper();
+  assert.equal(s3.push("before<think>unclosed"), "before");
+  assert.equal(s3.flush(), "");
+});
+
+test("createInternalInstructionSseSanitizer strips <think> tags from Gemini SSE text parts", () => {
+  const sanitizer = mitm.createInternalInstructionSseSanitizer();
+
+  // Chunk 1: <think> open tag as standalone text part
+  const chunk1 = `data: ${JSON.stringify({
+    response: {
+      candidates: [{ content: { parts: [{ text: "<think>" }], role: "model" } }],
+    },
+  })}\n\n`;
+
+  // Chunk 2: thinking content
+  const chunk2 = `data: ${JSON.stringify({
+    response: {
+      candidates: [{ content: { parts: [{ text: "internal reasoning steps" }], role: "model" } }],
+    },
+  })}\n\n`;
+
+  // Chunk 3: </think> close tag
+  const chunk3 = `data: ${JSON.stringify({
+    response: {
+      candidates: [{ content: { parts: [{ text: "</think>" }], role: "model" } }],
+    },
+  })}\n\n`;
+
+  // Chunk 4: real answer
+  const chunk4 = `data: ${JSON.stringify({
+    response: {
+      candidates: [{ content: { parts: [{ text: "the actual answer" }], role: "model" }, finishReason: "STOP" }],
+    },
+  })}\n\n`;
+
+  const out1 = sanitizer.push(chunk1);
+  const out2 = sanitizer.push(chunk2);
+  const out3 = sanitizer.push(chunk3);
+  const out4 = sanitizer.push(chunk4);
+  const tail = sanitizer.flush();
+
+  const output = [out1, out2, out3, out4, tail].join("");
+  assert.doesNotMatch(output, /internal reasoning steps/);
+  assert.doesNotMatch(output, /<think>|<\/think>/);
+  assert.match(output, /the actual answer/);
+});
+
+test("stripThoughtPartsFromGeminiPayload removes thought:true parts from SSE chunks", () => {
+  // Wrapped format: { response: { candidates } }
+  const wrapped = {
+    response: {
+      candidates: [{
+        content: {
+          parts: [
+            { thought: true, text: "internal reasoning..." },
+            { text: "actual response text" },
+          ],
+        },
+      }],
+    },
+  };
+  mitm.stripThoughtPartsFromGeminiPayload(wrapped);
+  const parts = wrapped.response.candidates[0].content.parts;
+  assert.equal(parts.length, 1);
+  assert.equal(parts[0].text, "actual response text");
+  assert.ok(!parts[0].thought);
+
+  // Flat format: { candidates }
+  const flat = {
+    candidates: [{
+      content: {
+        parts: [
+          { thought: true, text: "thinking..." },
+          { thought: true, text: "more thinking..." },
+          { text: "answer" },
+        ],
+      },
+    }],
+  };
+  mitm.stripThoughtPartsFromGeminiPayload(flat);
+  const flatParts = flat.candidates[0].content.parts;
+  assert.equal(flatParts.length, 1);
+  assert.equal(flatParts[0].text, "answer");
+
+  // No thought parts — should not mutate
+  const clean = {
+    candidates: [{
+      content: { parts: [{ text: "hello" }, { text: "world" }] },
+    }],
+  };
+  mitm.stripThoughtPartsFromGeminiPayload(clean);
+  assert.equal(clean.candidates[0].content.parts.length, 2);
+
+  // Null/undefined — should not throw
+  mitm.stripThoughtPartsFromGeminiPayload(null);
+  mitm.stripThoughtPartsFromGeminiPayload(undefined);
+  mitm.stripThoughtPartsFromGeminiPayload({});
+});
+
+test("createInternalInstructionSseSanitizer strips thought:true parts from Gemini SSE", () => {
+  const sanitizer = mitm.createInternalInstructionSseSanitizer();
+  const chunk = `data: ${JSON.stringify({
+    response: {
+      candidates: [{
+        content: {
+          parts: [
+            { thought: true, text: "my internal reasoning here" },
+            { text: "the real answer" },
+          ],
+        },
+        finishReason: "STOP",
+      }],
+    },
+  })}\n\n`;
+
+  const output = sanitizer.push(chunk) + sanitizer.flush();
+  assert.doesNotMatch(output, /internal reasoning/);
+  assert.match(output, /the real answer/);
+
+  // Output should still be valid JSON in each data line
+  for (const line of output.split("\n").filter((l) => l.startsWith("data: "))) {
+    const parsed = JSON.parse(line.slice(6));
+    const parts = parsed.response.candidates[0].content.parts;
+    assert.ok(parts.every((p) => p.thought !== true), "no thought parts should remain");
+  }
+});
+
+test("sanitizeInternalInstructionJsonText strips thought:true parts from non-streaming response", () => {
+  const raw = JSON.stringify({
+    candidates: [{
+      content: {
+        parts: [
+          { thought: true, text: "reasoning step" },
+          { text: "final answer" },
+        ],
+        role: "model",
+      },
+      finishReason: "STOP",
+    }],
+  });
+
+  const safe = mitm.sanitizeInternalInstructionJsonText(raw);
+  const parsed = JSON.parse(safe);
+  const parts = parsed.candidates[0].content.parts;
+  assert.equal(parts.length, 1);
+  assert.equal(parts[0].text, "final answer");
+  assert.doesNotMatch(safe, /reasoning step/);
+});
+
 test("stripDnsEntriesFromHostsContent removes managed and exact host entries only", () => {
   const input = [
     "127.0.0.1 localhost",

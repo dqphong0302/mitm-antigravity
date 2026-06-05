@@ -7,6 +7,83 @@ const INTERNAL_INSTRUCTION_MARKER_RE = /CRITICAL\s+INSTRUCTION\s+\d+\s*:/i;
 const INTERNAL_INSTRUCTION_PREFIX = "CRITICAL INSTRUCTION ";
 const TEXT_PAYLOAD_KEYS = new Set(["content", "delta", "message", "output_text", "text"]);
 
+// ── <think> block stripper ────────────────────────────────────────────────────
+// claude-to-openai.js emits "<think>" / "</think>" as plain delta.content
+// openai-to-antigravity.js passes these through as { text: "<think>" } parts
+// (not thought:true) so stripThoughtPartsFromGeminiPayload doesn't catch them.
+// This stateful stripper handles tags split across SSE chunk boundaries.
+function createThinkBlockStripper() {
+  let suppressing = false;
+  let pending = "";
+
+  function push(text) {
+    let input = pending + String(text || "");
+    pending = "";
+    let output = "";
+
+    while (input.length > 0) {
+      if (suppressing) {
+        const closeIdx = input.indexOf("</think>");
+        if (closeIdx === -1) {
+          // Entire remaining input is inside a think block — discard
+          return output;
+        }
+        // Skip everything up to and including </think>
+        input = input.slice(closeIdx + "</think>".length);
+        suppressing = false;
+        continue;
+      }
+
+      const openIdx = input.indexOf("<think>");
+      if (openIdx === -1) {
+        // No opening tag — check if tail could be a partial tag
+        const partialLen = partialTagSuffixLength(input, "<think>");
+        output += input.slice(0, input.length - partialLen);
+        pending = input.slice(input.length - partialLen);
+        return output;
+      }
+
+      // Emit text before <think>
+      output += input.slice(0, openIdx);
+      input = input.slice(openIdx + "<think>".length);
+      suppressing = true;
+    }
+
+    return output;
+  }
+
+  function flush() {
+    const out = suppressing ? "" : pending;
+    pending = "";
+    suppressing = false;
+    return out;
+  }
+
+  return { push, flush };
+}
+
+/**
+ * Return the length of the longest suffix of `text` that could be a
+ * partial prefix of `tag` (e.g. "<thi" when tag is "<think>").
+ */
+function partialTagSuffixLength(text, tag) {
+  const maxLen = Math.min(text.length, tag.length - 1);
+  for (let len = maxLen; len > 0; len--) {
+    if (tag.startsWith(text.slice(-len))) return len;
+  }
+  return 0;
+}
+
+/**
+ * Strip <think>...</think> blocks from a plain text string (non-streaming).
+ * Handles nested-free, single-pass replacement.
+ */
+function stripThinkBlocks(text) {
+  if (!text || !text.includes("<think>")) return text;
+  const stripper = createThinkBlockStripper();
+  return (stripper.push(text) + stripper.flush()).trimStart();
+}
+
 function isInternalInstructionLeak(text) {
   return INTERNAL_INSTRUCTION_MARKER_RE.test(String(text || ""));
 }
@@ -97,18 +174,19 @@ function shouldSanitizeStringKey(key) {
   return TEXT_PAYLOAD_KEYS.has(String(key || ""));
 }
 
-function sanitizeInternalInstructionValue(value, sanitizer, key = "") {
+function sanitizeInternalInstructionValue(value, sanitizer, thinkStripper, key = "") {
   if (typeof value === "string") {
     if (!shouldSanitizeStringKey(key)) return value;
-    return sanitizer.push(value);
+    const afterThink = thinkStripper ? thinkStripper.push(value) : value;
+    return sanitizer.push(afterThink);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeInternalInstructionValue(item, sanitizer));
+    return value.map((item) => sanitizeInternalInstructionValue(item, sanitizer, thinkStripper));
   }
   if (value && typeof value === "object") {
     const result = {};
     for (const [childKey, childValue] of Object.entries(value)) {
-      result[childKey] = sanitizeInternalInstructionValue(childValue, sanitizer, childKey);
+      result[childKey] = sanitizeInternalInstructionValue(childValue, sanitizer, thinkStripper, childKey);
     }
     return result;
   }
@@ -117,17 +195,49 @@ function sanitizeInternalInstructionValue(value, sanitizer, key = "") {
 
 function sanitizeInternalInstructionJsonText(text) {
   const sanitizer = createInternalInstructionTextSanitizer();
+  const thinkStripper = createThinkBlockStripper();
   try {
     const parsed = JSON.parse(String(text || ""));
-    const sanitized = sanitizeInternalInstructionValue(parsed, sanitizer);
+    stripThoughtPartsFromGeminiPayload(parsed);
+    const sanitized = sanitizeInternalInstructionValue(parsed, sanitizer, thinkStripper);
     sanitizer.flush();
+    thinkStripper.flush();
     return JSON.stringify(sanitized);
   } catch {
-    return stripInternalInstructionLeaks(text);
+    return stripInternalInstructionLeaks(stripThinkBlocks(text));
   }
 }
 
-function sanitizeInternalInstructionSseEvent(event, sanitizer) {
+/**
+ * Strip thought:true parts from a Gemini-format candidates array in-place.
+ * Antigravity does not expect to receive thinking parts from the proxy —
+ * they show up as raw text on screen when forwarded.
+ * Mutates the parsed object directly to avoid an extra JSON round-trip.
+ */
+function stripThoughtPartsFromGeminiPayload(parsed) {
+  if (!parsed || typeof parsed !== "object") return;
+
+  // Support both wrapped { response: { candidates } } and flat { candidates }
+  const root = parsed.response && typeof parsed.response === "object"
+    ? parsed.response
+    : parsed;
+
+  const candidates = Array.isArray(root.candidates) ? root.candidates : null;
+  if (!candidates) return;
+
+  for (const candidate of candidates) {
+    if (!candidate || !candidate.content) continue;
+    const parts = candidate.content.parts;
+    if (!Array.isArray(parts)) continue;
+    const filtered = parts.filter((p) => !(p && p.thought === true));
+    // Only mutate when something was actually removed
+    if (filtered.length !== parts.length) {
+      candidate.content.parts = filtered;
+    }
+  }
+}
+
+function sanitizeInternalInstructionSseEvent(event, sanitizer, thinkStripper) {
   const lines = String(event || "").split(/\r?\n/);
   const dataLines = [];
   const otherLines = [];
@@ -146,10 +256,11 @@ function sanitizeInternalInstructionSseEvent(event, sanitizer) {
 
   try {
     const parsed = JSON.parse(data);
-    const sanitized = sanitizeInternalInstructionValue(parsed, sanitizer);
+    stripThoughtPartsFromGeminiPayload(parsed);
+    const sanitized = sanitizeInternalInstructionValue(parsed, sanitizer, thinkStripper);
     return [...otherLines, `data: ${JSON.stringify(sanitized)}`].join("\n");
   } catch {
-    return [...otherLines, `data: ${sanitizer.push(data)}`].join("\n");
+    return [...otherLines, `data: ${sanitizer.push(thinkStripper ? thinkStripper.push(data) : data)}`].join("\n");
   }
 }
 
@@ -164,6 +275,7 @@ function nextSseEventBoundary(text) {
 function createInternalInstructionSseSanitizer(maxBufferBytes = DEFAULT_MAX_SSE_BUFFER_BYTES) {
   let buffer = "";
   const sanitizer = createInternalInstructionTextSanitizer();
+  const thinkStripper = createThinkBlockStripper();
 
   function push(chunk) {
     buffer += String(chunk || "");
@@ -175,16 +287,17 @@ function createInternalInstructionSseSanitizer(maxBufferBytes = DEFAULT_MAX_SSE_
       if (!boundary) break;
       const event = buffer.slice(0, boundary.index);
       buffer = buffer.slice(boundary.index + boundary.length);
-      output += `${sanitizeInternalInstructionSseEvent(event, sanitizer)}\n\n`;
+      output += `${sanitizeInternalInstructionSseEvent(event, sanitizer, thinkStripper)}\n\n`;
     }
 
     return output;
   }
 
   function flush() {
-    const output = buffer ? sanitizeInternalInstructionSseEvent(buffer, sanitizer) : "";
+    const output = buffer ? sanitizeInternalInstructionSseEvent(buffer, sanitizer, thinkStripper) : "";
     buffer = "";
     sanitizer.flush();
+    thinkStripper.flush();
     return output;
   }
 
@@ -194,7 +307,10 @@ function createInternalInstructionSseSanitizer(maxBufferBytes = DEFAULT_MAX_SSE_
 module.exports = {
   createInternalInstructionSseSanitizer,
   createInternalInstructionTextSanitizer,
+  createThinkBlockStripper,
   isInternalInstructionLeak,
   sanitizeInternalInstructionJsonText,
   stripInternalInstructionLeaks,
+  stripThinkBlocks,
+  stripThoughtPartsFromGeminiPayload,
 };

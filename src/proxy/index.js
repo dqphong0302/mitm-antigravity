@@ -42,9 +42,12 @@ const { MB, ProxyMemoryLimitError, bytesLabel, ensureBufferLimit } = require("./
 const { appendRecentRequestLog, previewJson } = require("./request-log");
 const {
   createInternalInstructionSseSanitizer,
+  createThinkBlockStripper,
   isInternalInstructionLeak,
   sanitizeInternalInstructionJsonText,
   stripInternalInstructionLeaks,
+  stripThinkBlocks,
+  stripThoughtPartsFromGeminiPayload,
 } = require("./internal-instruction-sanitizer");
 const {
   adaptiveGptModelForReasoning,
@@ -666,11 +669,21 @@ async function runProxy(options) {
 
       // Antigravity IDE version override: rewrite User-Agent + body.metadata.ideVersion
       // to a known-good version so upstream AG 2.x backend accepts the request.
-      const versionOverride = applyAntigravityIdeVersionOverride(bodyBuffer, req.headers);
-      const bodyForForwarding = versionOverride.bodyBuffer;
-      const headersForForwarding = { ...versionOverride.headers, host: targetHost };
-      if (bodyForForwarding !== bodyBuffer) {
-        headersForForwarding["content-length"] = String(bodyForForwarding.length);
+      //
+      // Scope to chat endpoints ONLY — same rule as HOST_REWRITE above. Auth,
+      // login, and account-bootstrap handshakes (loadCodeAssist, fetchUserInfo,
+      // onboardUser, listExperiments, OAuth) must carry the IDE's real version
+      // identity. Forging a hardcoded version on those requests makes upstream
+      // reject the session and breaks login in the IDE.
+      let bodyForForwarding = bodyBuffer;
+      let headersForForwarding = { ...req.headers, host: targetHost };
+      if (isChatEndpoint) {
+        const versionOverride = applyAntigravityIdeVersionOverride(bodyBuffer, req.headers);
+        bodyForForwarding = versionOverride.bodyBuffer;
+        headersForForwarding = { ...versionOverride.headers, host: targetHost };
+        if (bodyForForwarding !== bodyBuffer) {
+          headersForForwarding["content-length"] = String(bodyForForwarding.length);
+        }
       }
 
       const targetIP = await resolveTargetIP(targetHost);
@@ -932,7 +945,9 @@ async function runProxy(options) {
         || (body.config && body.config.thinkingConfig)
         || null;
       const targetModelName = String(body.model || originalModel || "").toLowerCase();
-      const isThinkingModel = targetModelName.endsWith("-thinking");
+      // Models ending in "-thinking" OR containing "-thinking-" (e.g. kr/claude-sonnet-4.6-thinking-agentic)
+      // are both considered thinking models for reasoning effort inference.
+      const isThinkingModel = targetModelName.endsWith("-thinking") || targetModelName.includes("-thinking-");
 
       if (shouldUseReasoningEffort(thinkingCfg, isThinkingModel)) {
         if (mappedEntry && mappedEntry.reasoning_effort) body.reasoning_effort = mappedEntry.reasoning_effort;
@@ -1260,6 +1275,9 @@ module.exports = {
   stripInternalInstructionLeaks,
   sanitizeInternalInstructionJsonText,
   createInternalInstructionSseSanitizer,
+  createThinkBlockStripper,
+  stripThinkBlocks,
+  stripThoughtPartsFromGeminiPayload,
   normalizeReasoningEffort,
   inferReasoningEffort,
   adaptiveGptModelForReasoning,
