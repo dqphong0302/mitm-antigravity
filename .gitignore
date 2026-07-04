@@ -16,3 +16,4 @@ typescript
 # Tauri signing keys – KHÔNG bao giờ commit private key lên git
 tauri-signing.key
 tauri-signing.key.pub
+.playwright-mcp/

@@ -13,7 +13,11 @@
 //
 // Technique borrowed from decolua/9router's src/mitm/antigravityIdeVersion.js.
 
-const ANTIGRAVITY_IDE_VERSION = "1.23.2";
+// Current shipping Antigravity IDE build (2.x). Was "1.23.2" (dead AG 1.x IDE);
+// bumped to latest changelog release (2.2.1, 2026-06-25) so the AG 2.0 backend
+// keeps accepting us. Override via env for quick bumps without a code change.
+// ponytail: hardcoded default = latest known-good; upgrade path = MITM_AG_IDE_VERSION env.
+const ANTIGRAVITY_IDE_VERSION = process.env.MITM_AG_IDE_VERSION || "2.2.1";
 const ANTIGRAVITY_IDE_VERSION_OVERRIDE_ENABLED = true;
 
 /**
