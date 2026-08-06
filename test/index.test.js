@@ -1370,6 +1370,18 @@ test("wizard keeps primary aliases while GUI can expose all mappable aliases", (
   }
 });
 
+test("getMappedEntry resolves cross-version model family fallbacks for gemini-3.1-pro-low", () => {
+  const { getMappedEntry } = require("../src/models");
+  const options = {
+    modelMap: {
+      "gemini-3.1-pro-low": "cx/gpt-5.5",
+    },
+  };
+  assert.equal(getMappedEntry("gemini-3.5-pro", options)?.model, "cx/gpt-5.5");
+  assert.equal(getMappedEntry("gemini-3.6-pro", options)?.model, "cx/gpt-5.5");
+  assert.equal(getMappedEntry("gemini-3.6-pro-low", options)?.model, "cx/gpt-5.5");
+});
+
 test("GUI route table finds known routes and rejects unknown routes", () => {
   const { createGuiRoutes, findGuiRoute } = require("../src/gui/routes");
   const handlers = {

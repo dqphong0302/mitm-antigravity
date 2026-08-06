@@ -429,6 +429,43 @@ function readAgyConfigAliases() {
   }
 }
 
+function familyFallbacksForModel(modelName) {
+  const lower = String(modelName || "").toLowerCase();
+  const list = [];
+  if (lower.includes("thinking")) {
+    if (lower.includes("pro")) {
+      list.push("gemini-3.6-pro-thinking", "gemini-3.5-pro-thinking", "gemini-3.1-pro-high");
+    } else {
+      list.push("gemini-3.6-flash-thinking", "gemini-3.5-flash-thinking", "gemini-2.5-flash-thinking");
+    }
+  } else if (lower.includes("pro")) {
+    list.push(
+      "gemini-3.6-pro-high",
+      "gemini-3.6-pro-low",
+      "gemini-3.6-pro",
+      "gemini-3.5-pro",
+      "gemini-3.1-pro-high",
+      "gemini-3.1-pro-low",
+      "gemini-3-pro-high",
+      "gemini-3-pro-low",
+      "gemini-pro-agent"
+    );
+  } else if (lower.includes("flash")) {
+    list.push(
+      "gemini-3.6-flash",
+      "gemini-3.6-flash-low",
+      "gemini-3.5-flash",
+      "gemini-3.5-flash-low",
+      "gemini-3.5-flash-extra-low",
+      "gemini-3-flash",
+      "gemini-3.1-flash-lite"
+    );
+  } else if (lower.includes("claude") || lower.includes("sonnet") || lower.includes("opus")) {
+    list.push("claude-sonnet-4-6", "claude-sonnet-4", "claude-opus-4-6-thinking", "claude-opus-4-thinking");
+  }
+  return list;
+}
+
 function getMappedEntry(model, options) {
   if (!model) return null;
   if (options.model) return { model: options.model };
@@ -447,6 +484,11 @@ function getMappedEntry(model, options) {
         }
       }
     }
+    for (const fallback of familyFallbacksForModel(candidate)) {
+      if (!extendedCandidates.includes(fallback)) {
+        extendedCandidates.push(fallback);
+      }
+    }
   }
 
   if (options.modelMap) {
@@ -463,6 +505,10 @@ function getMappedEntry(model, options) {
         && extendedCandidates.some((candidate) => candidate.startsWith(key) || key.startsWith(candidate));
     });
     if (prefixKey) return normalizeMappingEntry(options.modelMap[prefixKey]);
+
+    // Check wildcard or default modelMap fallback if present
+    if (options.modelMap["*"]) return normalizeMappingEntry(options.modelMap["*"]);
+    if (options.modelMap["default"]) return normalizeMappingEntry(options.modelMap["default"]);
   }
 
   // ~/.9router/db.json — 9router desktop app config
