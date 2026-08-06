@@ -1334,6 +1334,12 @@ test("GUI client script is valid browser JavaScript", () => {
 
 test("wizard keeps primary aliases while GUI can expose all mappable aliases", () => {
   assert.deepEqual(mitm.PRIMARY_ANTIGRAVITY_ALIASES, [
+    "gemini-3.6-flash",
+    "gemini-3.6-flash-thinking",
+    "gemini-3.6-flash-low",
+    "gemini-3.6-pro",
+    "gemini-3.6-pro-thinking",
+    "gemini-3.6-pro-high",
     "gemini-3.5-flash",
     "gemini-3.5-flash-thinking",
     "gemini-3.5-flash-low",
@@ -1717,3 +1723,98 @@ test("removeDNSEntries clears both IPv4 and IPv6 loopback entries", async () => 
     "all entries (v4 + v6) should be removed after cleanup");
   assert.equal(content, "127.0.0.1 localhost\n", "hosts file should be restored to original");
 });
+
+test("quotas parser loadAccounts reads and parses account files correctly", () => {
+  const { loadAccounts } = require("../src/gui/quotas");
+  const testDir = fs.mkdtempSync(path.join(os.tmpdir(), "mitm-quotas-test-"));
+  
+  try {
+    const accountsIndex = {
+      current_account_id: "acc-1",
+      accounts: [
+        { id: "acc-1", custom_label: "Tài khoản 1" },
+        { id: "acc-2" }
+      ]
+    };
+    fs.writeFileSync(path.join(testDir, "accounts.json"), JSON.stringify(accountsIndex));
+    
+    const nowSec = Math.floor(Date.now() / 1000);
+    const account1 = {
+      id: "acc-1",
+      email: "acc1@gmail.com",
+      name: "Acc One",
+      quota: {
+        subscription_tier: "enterprise",
+        last_updated: nowSec,
+        models: [
+          {
+            name: "gemini-3.1-pro-low",
+            percentage: 85.5,
+            reset_time: new Date(Date.now() + 3600000).toISOString(),
+            display_name: "Gemini 3.1 Pro (Low)",
+            recommended: true
+          }
+        ],
+        quota_groups: [
+          {
+            display_name: "Gemini Models",
+            buckets: [
+              {
+                bucket_id: "gemini-weekly",
+                window: "weekly",
+                remaining_fraction: 0.75,
+                reset_time: new Date(Date.now() + 86400000 * 5).toISOString(),
+                display_name: "Weekly Limit"
+              },
+              {
+                bucket_id: "gemini-5h",
+                window: "5h",
+                remaining_fraction: 1.0,
+                reset_time: new Date(Date.now() + 3600000).toISOString(),
+                display_name: "Five Hour Limit"
+              }
+            ]
+          }
+        ]
+      }
+    };
+    fs.writeFileSync(path.join(testDir, "acc-1.json"), JSON.stringify(account1));
+    
+    const account2 = {
+      id: "acc-2",
+      email: "acc2@gmail.com",
+      quota: {
+        last_updated: nowSec,
+        is_forbidden: true,
+        models: []
+      }
+    };
+    fs.writeFileSync(path.join(testDir, "acc-2.json"), JSON.stringify(account2));
+    
+    const result = loadAccounts(testDir);
+    
+    assert.equal(result.accounts.length, 2);
+    assert.equal(result.accounts[0].id, "acc-1");
+    assert.equal(result.accounts[0].is_current, true);
+    assert.equal(result.accounts[0].name, "Tài khoản 1");
+    assert.equal(result.accounts[0].avg, 85.5);
+    assert.equal(result.accounts[0].windows.short.length, 1);
+    assert.equal(result.accounts[0].windows.short[0].name, "gemini-3.1-pro-low");
+    
+    // Assert quota groups are parsed
+    assert.equal(result.accounts[0].quota_groups.length, 1);
+    assert.equal(result.accounts[0].quota_groups[0].display_name, "Gemini Models");
+    assert.equal(result.accounts[0].quota_groups[0].buckets.length, 2);
+    assert.equal(result.accounts[0].quota_groups[0].buckets[0].bucket_id, "gemini-weekly");
+    assert.equal(result.accounts[0].quota_groups[0].buckets[0].percentage, 75.0);
+    assert.equal(result.accounts[0].quota_groups[0].buckets[1].bucket_id, "gemini-5h");
+    assert.equal(result.accounts[0].quota_groups[0].buckets[1].percentage, 100.0);
+    
+    assert.equal(result.accounts[1].id, "acc-2");
+    assert.equal(result.accounts[1].is_current, false);
+    assert.equal(result.accounts[1].is_forbidden, true);
+  } finally {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  }
+});
+

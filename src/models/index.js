@@ -49,10 +49,20 @@ const BUILTIN_MODEL_VALUE_ALIASES = new Map([
   ["MODEL_PLACEHOLDER_M187", "gemini-3.5-flash-extra-low"],
   ["MODEL_GOOGLE_GEMINI_3_5_PRO", "gemini-3.5-pro"],
   ["MODEL_GOOGLE_GEMINI_3_5_PRO_THINKING", "gemini-3.5-pro-thinking"],
+  // ── Gemini 3.6 placeholders (Antigravity 2.0 / 3.6 update) ────────────────
+  ["MODEL_GOOGLE_GEMINI_3_6_FLASH", "gemini-3.6-flash"],
+  ["MODEL_GOOGLE_GEMINI_3_6_FLASH_THINKING", "gemini-3.6-flash-thinking"],
+  ["MODEL_GOOGLE_GEMINI_3_6_FLASH_LOW", "gemini-3.6-flash-low"],
+  ["MODEL_GOOGLE_GEMINI_3_6_PRO", "gemini-3.6-pro"],
+  ["MODEL_GOOGLE_GEMINI_3_6_PRO_THINKING", "gemini-3.6-pro-thinking"],
+  ["MODEL_GOOGLE_GEMINI_3_6_PRO_HIGH", "gemini-3.6-pro-high"],
+  ["MODEL_GOOGLE_GEMINI_3_6_PRO_LOW", "gemini-3.6-pro-low"],
   // Numeric IDs seen in agy 2.0 traffic (may expand as more are observed)
   ["400", "gemini-3.5-flash"],
   ["401", "gemini-3.5-flash-thinking"],
   ["402", "gemini-3.5-pro"],
+  ["405", "gemini-3.6-flash"],
+  ["406", "gemini-3.6-pro"],
   // ── Claude 4 short aliases (Antigravity 2.0) ──────────────────────────────
   ["MODEL_ANTHROPIC_CLAUDE_SONNET_4", "claude-sonnet-4"],
   ["MODEL_ANTHROPIC_CLAUDE_OPUS_4", "claude-opus-4"],
@@ -63,8 +73,9 @@ const BUILTIN_MODEL_VALUE_ALIASES = new Map([
   ["gh/gemini-3.1-pro-preview", "gemini-3.1-pro-high"],
   ["gemini-pro-agent", "gemini-3.1-pro-high"],
   ["gemini-3-flash-agent", "gemini-3-flash"],
-  // Antigravity 2.0 may send "gemini-3.5-flash" as the bare default
+  // Antigravity 2.0 / 3.6 bare defaults
   ["gemini-3.5", "gemini-3.5-flash"],
+  ["gemini-3.6", "gemini-3.6-flash"],
   // Claude 4 short → versioned
   ["claude-sonnet-4", "claude-sonnet-4"],
   ["claude-opus-4", "claude-opus-4"],
@@ -72,14 +83,17 @@ const BUILTIN_MODEL_VALUE_ALIASES = new Map([
 
 const MODEL_SYNONYMS = {
   antigravity: {
-    "gemini-default": "gemini-3.5-flash-low",
+    "gemini-default": "gemini-3.6-flash-low",
     "gemini-3.1-pro-high": "gemini-pro-agent",
     "gemini-3.5": "gemini-3.5-flash",
+    "gemini-3.6": "gemini-3.6-flash",
   },
 };
 
 const MODEL_PATTERNS = {
   antigravity: [
+    { match: /3\.6.*flash|flash.*3\.6/i, alias: "gemini-3.6-flash" },
+    { match: /3\.6.*pro|pro.*3\.6/i, alias: "gemini-3.6-pro-high" },
     { match: /flash.*low|low.*flash/i, alias: "gemini-3.5-flash-low" },
     { match: /pro.*low|low.*pro/i, alias: "gemini-3.1-pro-low" },
     { match: /opus/i, alias: "claude-opus-4-6-thinking" },

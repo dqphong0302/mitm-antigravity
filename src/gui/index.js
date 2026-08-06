@@ -58,6 +58,9 @@ const { getProxyManager } = require("../proxy/manager");
 const { guiHtml } = require("./template");
 const { sendApiError, sendHtml, sendNotFound } = require("./api-utils");
 const { createGuiRoutes, findGuiRoute } = require("./routes");
+const { loadAccounts } = require("./quotas");
+const os = require("os");
+const path = require("path");
 
 function guiPresets() {
   return {};
@@ -253,6 +256,7 @@ function createRouteHandlers(options) {
     handleStatus: (_req, res) => handleStatus(res, options),
     handleEvents: (req, res) => handleEvents(req, res, options),
     handleClearLogs,
+    handleGetQuotas: (_req, res) => handleGetQuotas(res),
   };
 }
 
@@ -277,6 +281,16 @@ async function handleBootstrap(res) {
       needsSudoPassword: !IS_WIN && !IS_MAC,
     },
   });
+}
+
+async function handleGetQuotas(res) {
+  try {
+    const dataDir = path.join(os.homedir(), ".antigravity_tools");
+    const data = loadAccounts(dataDir);
+    sendJson(res, 200, data);
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
 }
 
 async function handleSaveConfig(req, res, options) {

@@ -27,7 +27,11 @@ function runtimeDir() {
 }
 
 function cliEntrypointPath() {
-  return process.pkg ? process.execPath : path.join(runtimeDir(), "index.js");
+  // Source mode: the runnable CLI entry is repo-root index.js (which calls
+  // main()). runtimeDir() is src/, so the entry sits one level up. Pointing at
+  // src/index.js would spawn a module that exits immediately — the detached
+  // LaunchDaemon proxy then "crashes" with nothing listening on 443.
+  return process.pkg ? process.execPath : path.resolve(runtimeDir(), "..", "index.js");
 }
 
 function bundledSettingsPath() {

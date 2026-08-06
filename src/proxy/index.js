@@ -439,6 +439,18 @@ async function runProxy(options) {
         } else if (modelLower === "claude-sonnet-4" || modelLower === "claude-sonnet-4.0") {
           body.model = "kr/claude-sonnet-4.6-agentic";
 
+        // ── Gemini 3.6 (Antigravity 2.0 / 3.6 update) ─────────────────────
+        } else if (modelLower.includes("gemini-3.6-pro-thinking") || modelLower.includes("gemini-3.6-pro-high")) {
+          body.model = "gemini-3.1-pro-high";
+        } else if (modelLower.includes("gemini-3.6-pro")) {
+          body.model = "gemini-3.1-pro-low";
+        } else if (modelLower.includes("gemini-3.6-flash-extra-low")) {
+          body.model = "gemini-3.5-flash-low";
+        } else if (modelLower.includes("gemini-3.6-flash-thinking")) {
+          body.model = "gemini-2.5-flash-thinking";
+        } else if (modelLower.includes("gemini-3.6-flash")) {
+          body.model = "gemini-3-flash";
+
         // ── Gemini 3.5 (Antigravity 2.0 default) ──────────────────────────
         } else if (modelLower.includes("gemini-3.5-pro-thinking") || modelLower.includes("gemini-3.5-pro-high")) {
           body.model = "gemini-3.1-pro-high";

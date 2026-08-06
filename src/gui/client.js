@@ -320,7 +320,7 @@ function guiClientScript() {
     }
 
     function setSystemButtons(disabled) {
-      ["proxyToggleBtn", "applyDnsBtn", "applyAppTrustBtn", "startProxyOnlyBtn", "stopCleanupBtn", "removeDnsBtn", "forceKillPortBtn", "enableAutoStartBtn", "disableAutoStartBtn", "uninstallCertBtn", "runDoctorBtn"].forEach((id) => {
+      ["proxyToggleBtn", "applyDnsBtn", "applyAppTrustBtn", "startProxyOnlyBtn", "stopCleanupBtn", "removeDnsBtn", "forceKillPortBtn", "enableAutoStartBtn", "disableAutoStartBtn", "uninstallCertBtn", "runDoctorBtn", "refreshQuotasBtn"].forEach((id) => {
         if ($(id)) $(id).disabled = disabled;
       });
     }
@@ -727,6 +727,215 @@ function guiClientScript() {
       }
     }
 
+    let quotasCountdownInterval = null;
+    let currentQuotasData = null;
+
+    function fmtCountdown(iso, lang) {
+      if (!iso) return "—";
+      const t = new Date(iso).getTime();
+      let s = Math.floor((t - Date.now()) / 1000);
+      if (s <= 0) return lang === "vi" ? "đã reset" : "reset";
+      const d = Math.floor(s / 86400); s -= d * 86400;
+      const h = Math.floor(s / 3600); s -= h * 3600;
+      const m = Math.floor(s / 60); s -= m * 60;
+      if (d > 0) {
+        return lang === "vi" ? "còn " + d + "n " + h + "g " + m + "p" : "in " + d + "d " + h + "h " + m + "m";
+      }
+      if (h > 0) {
+        return lang === "vi" ? "còn " + h + "g " + m + "p " + s + "s" : "in " + h + "h " + m + "m " + s + "s";
+      }
+      return lang === "vi" ? "còn " + m + "p " + s + "s" : "in " + m + "m " + s + "s";
+    }
+
+    function pctColor(p) {
+      if (p === null || p === undefined) return "var(--muted)";
+      if (p >= 50) return "var(--ok)";
+      if (p >= 20) return "var(--warn)";
+      return "var(--danger)";
+    }
+
+    function pctColorClass(p) {
+      if (p === null || p === undefined) return "neutral";
+      if (p >= 50) return "good";
+      if (p >= 20) return "warn";
+      return "bad";
+    }
+
+    function fmtUnix(s, lang) {
+      if (!s) return "—";
+      try {
+        return new Date(s * 1000).toLocaleString(lang === "vi" ? "vi-VN" : "en-US");
+      } catch (e) {
+        return String(s);
+      }
+    }
+
+    function tickQuotas() {
+      const lang = state.lang || "en";
+      document.querySelectorAll("[data-reset-time]").forEach((el) => {
+        const resetTime = el.dataset.resetTime;
+        el.textContent = fmtCountdown(resetTime, lang);
+      });
+    }
+
+    async function loadQuotas() {
+      try {
+        const container = $("quotasContainer");
+        container.innerHTML = '<div class="notice">' + (state.lang === "vi" ? "Đang tải hạn mức tài khoản..." : "Loading account quotas...") + '</div>';
+        
+        const data = await api("/api/quotas");
+        currentQuotasData = data;
+        renderQuotas(data);
+
+        if (!quotasCountdownInterval) {
+          quotasCountdownInterval = setInterval(tickQuotas, 1000);
+        }
+      } catch (error) {
+        $("quotasContainer").innerHTML = '<div class="notice warn">' + t("error.prefix", { message: error.message }) + '</div>';
+      }
+    }
+
+    function renderQuotas(data) {
+      const container = $("quotasContainer");
+      if (!data || !data.accounts || data.accounts.length === 0) {
+        container.innerHTML = '<div class="notice warn">' + t("quotas.noAccounts") + '</div>';
+        return;
+      }
+
+      let html = "";
+      
+      if (!data.has_week) {
+        html += '<div class="notice"><strong>' + 
+          (state.lang === "vi" ? "Chưa thấy dữ liệu quota theo tuần trong file." : "No weekly quota data observed in account files.") + 
+          '</strong> ' + 
+          (state.lang === "vi" ? "Các tài khoản từ Antigravity-Manager hiện chỉ chứa chu kỳ ~5 giờ. Mục tuần sẽ tự động hiện khi file có dữ liệu." : "Account files stored by Antigravity-Manager currently only contain ~5 hour cycle data. The weekly section will appear once available.") + 
+          '</div>';
+      }
+
+      html += '<div class="quotas-grid">';
+
+      for (const a of data.accounts) {
+        const badges = [];
+        if (a.subscription_tier) badges.push('<span class="badge tier">' + a.subscription_tier + '</span>');
+        if (a.is_current) badges.push('<span class="badge cur">' + (state.lang === "vi" ? "Đang dùng" : "Active") + '</span>');
+        if (a.is_forbidden) badges.push('<span class="badge bad">' + (state.lang === "vi" ? "Bị cấm" : "Forbidden") + '</span>');
+        if (a.disabled) badges.push('<span class="badge warn">' + t("quotas.disabled") + '</span>');
+        if (a.validation_blocked) badges.push('<span class="badge warn">' + (state.lang === "vi" ? "Cần xác minh" : "Verify Required") + '</span>');
+
+        const avgText = a.avg === null ? "—" : a.avg + "%";
+        const avgVal = a.avg || 0;
+        const donutColor = pctColor(a.avg);
+
+        let acctHtml = 
+          '<div class="acct-card' + (a.is_current ? ' cur' : '') + '">' +
+            '<div class="acct-header">' +
+              '<div class="acct-row1">' +
+                '<span class="acct-email">' + (a.email || "unknown") + '</span>' +
+              '</div>' +
+              (a.name ? '<div class="acct-name">' + a.name + '</div>' : '') +
+              '<div class="acct-badges">' + badges.join("") + '</div>' +
+            '</div>' +
+            
+            '<div class="acct-summary">' +
+              '<div class="acct-donut" style="--p: ' + avgVal + '; background: conic-gradient(' + donutColor + ' calc(' + avgVal + ' * 1%), var(--border) 0);">' +
+                '<span class="acct-donut-value">' + avgText + '</span>' +
+              '</div>' +
+              '<div class="acct-stats">' +
+                '<div class="acct-stat-item">' + t("quotas.averageLimit") + ': <strong>' + avgText + '</strong></div>' +
+                '<div class="acct-stat-item">' + t("quotas.lowestLimit") + ': <strong>' + (a.lowest === null ? "—" : a.lowest + "%") + '</strong> · ' + a.model_count + ' models</div>' +
+              '</div>' +
+            '</div>' +
+            
+            (a.quota_groups && a.quota_groups.length > 0 ? (
+              '<div class="acct-quota-groups-section">' +
+                a.quota_groups.map(g => (
+                  '<div class="acct-quota-group">' +
+                    '<div class="acct-group-header">' +
+                      '<span class="acct-group-title">' + g.display_name + '</span>' +
+                      (g.description ? '<span class="acct-group-desc" title="' + g.description + '">ⓘ</span>' : '') +
+                    '</div>' +
+                    '<div class="buckets-list">' +
+                      g.buckets.map(b => {
+                        const p = b.percentage;
+                        const w = p === null || p === undefined ? 0 : Math.max(0, Math.min(100, p));
+                        const colorClass = pctColorClass(p);
+                        const pctText = p === null || p === undefined ? "—" : Math.round(p) + "%";
+                        const countdown = fmtCountdown(b.reset_time, state.lang);
+                        return (
+                          '<div class="bucket-item">' +
+                            '<div class="bucket-details">' +
+                              '<span class="bucket-name">' + b.display_name + '</span>' +
+                              '<span class="bucket-pct ' + colorClass + '">' + pctText + '</span>' +
+                            '</div>' +
+                            '<div class="model-progress-bar">' +
+                              '<div class="model-progress-fill ' + colorClass + '" style="width: ' + w + '%"></div>' +
+                            '</div>' +
+                            (b.reset_time ? '<div class="model-countdown">' + t("quotas.resetIn") + ': <span data-reset-time="' + b.reset_time + '">' + countdown + '</span></div>' : '') +
+                          '</div>'
+                        );
+                      }).join("") +
+                    '</div>' +
+                  '</div>'
+                )).join("") +
+              '</div>'
+            ) : '');
+        
+        let hasModels = false;
+        if (a.windows) {
+          const allModels = [];
+          for (const key in a.windows) {
+            allModels.push(...a.windows[key]);
+          }
+          if (allModels.length > 0) {
+            hasModels = true;
+            allModels.sort((x, y) => {
+              if (x.recommended !== y.recommended) return x.recommended ? -1 : 1;
+              return x.name.localeCompare(y.name);
+            });
+
+            acctHtml += 
+              '<div class="acct-windows">' +
+                '<div class="acct-window" style="margin-top: 4px;">' +
+                  '<details>' +
+                    '<summary style="font-size: 12px; font-weight: 600; color: var(--accent); cursor: pointer; outline: none; padding: 4px 0;">' + 
+                      (state.lang === "vi" ? 'Danh sách model (' + allModels.length + ')' : 'Model List (' + allModels.length + ')') + 
+                    '</summary>' +
+                    '<div class="models-list" style="margin-top: 8px; max-height: 240px; overflow-y: auto; padding-right: 4px;">' +
+                      allModels.map(m => {
+                        const isRec = m.recommended ? " rec" : "";
+                        return (
+                          '<div class="model-item" style="padding: 4px 0; border-bottom: 1px dashed var(--border);">' +
+                            '<div class="model-details" style="display: flex; justify-content: space-between; font-size: 12px;">' +
+                              '<span class="model-name' + isRec + '" style="font-weight: 500; color: var(--text);">' + (m.display_name || m.name || "") + '</span>' +
+                              (m.percentage !== null && m.percentage !== undefined ? '<span class="model-pct" style="color: var(--muted);">' + Math.round(m.percentage) + '%</span>' : '') +
+                            '</div>' +
+                          '</div>'
+                        );
+                      }).join("") +
+                    '</div>' +
+                  '</details>' +
+                '</div>';
+          }
+        }
+
+        if (hasModels) {
+          acctHtml += '</div>';
+        }
+            
+        acctHtml += 
+            '<div class="acct-footer">' +
+              '<span>' + t("quotas.lastUpdated") + ':</span>' +
+              '<strong>' + fmtUnix(a.last_updated, state.lang) + '</strong>' +
+            '</div>' +
+          '</div>';
+
+        html += acctHtml;
+      }
+
+      html += '</div>';
+      container.innerHTML = html;
+    }
+
     function switchTab(tab) {
       document.querySelectorAll(".tab-btn").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.tab === tab);
@@ -737,6 +946,7 @@ function guiClientScript() {
       if (tab === "logs")        loadLogs();
       if (tab === "dashboard")   loadStatus();
       if (tab === "doctor")      runDoctor();
+      if (tab === "quotas")      loadQuotas();
     }
 
     function bindEvents() {
@@ -773,6 +983,7 @@ function guiClientScript() {
       $("forceKillPortBtn").addEventListener("click", forceKillPort);
       $("runDoctorBtn").addEventListener("click", runDoctor);
       $("uninstallCertBtn").addEventListener("click", uninstallCertUi);
+      $("refreshQuotasBtn").addEventListener("click", loadQuotas);
       $("enableAutoStartBtn").addEventListener("click", enableAutoStartUi);
       $("disableAutoStartBtn").addEventListener("click", disableAutoStartUi);
       subscribeProxyEvents();

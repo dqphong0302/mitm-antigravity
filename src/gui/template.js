@@ -54,6 +54,7 @@ function guiHtml() {
         <button class="tab-btn" data-tab="doctor" type="button" data-i18n="nav.doctor">Doctor</button>
         <button class="tab-btn" data-tab="config" type="button" data-i18n="nav.config">Endpoint API</button>
         <button class="tab-btn" data-tab="mapping" type="button" data-i18n="nav.mapping">Model Mapping</button>
+        <button class="tab-btn" data-tab="quotas" type="button" data-i18n="nav.quotas">Quotas</button>
         <button class="tab-btn" data-tab="logs" type="button" data-i18n="nav.logs">Logs</button>
         <button class="tab-btn" data-tab="settings" type="button" data-i18n="nav.settings">Settings</button>
         <button class="tab-btn" data-tab="guide" type="button" data-i18n="nav.guide">Guide</button>
@@ -208,6 +209,22 @@ function guiHtml() {
             </div>
             <div id="mappingStatus" class="status"></div>
             <p class="panel-subtitle" data-i18n="mapping.note">All known mappable Antigravity models are shown here. Unmapped models pass through to Google.</p>
+          </section>
+        </section>
+
+        <section class="tab-panel" data-panel="quotas">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title" data-i18n="quotas.title">Account Quotas</h2>
+                <p class="panel-subtitle" data-i18n="quotas.subtitle">Monitor your Antigravity-Manager accounts, active status, remaining limits, and countdown to reset.</p>
+              </div>
+              <button class="secondary" id="refreshQuotasBtn" type="button" data-i18n="button.refresh">Refresh</button>
+            </div>
+            
+            <div id="quotasContainer">
+              <div class="notice" data-i18n="quotas.noAccounts">Loading account quotas...</div>
+            </div>
           </section>
         </section>
 

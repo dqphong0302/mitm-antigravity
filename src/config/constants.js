@@ -51,6 +51,16 @@ const ANTIGRAVITY_ALIASES = [
   "gemini-3.5-flash-extra-low",   // live: MODEL_PLACEHOLDER_M187, "Gemini 3.5 Flash (Low)"
   "gemini-3.5-pro",
   "gemini-3.5-pro-thinking",
+  // ── Gemini 3.6 ───────────────────────────────────────────────────────────
+  "gemini-3.6-flash",
+  "gemini-3.6-flash-thinking",
+  "gemini-3.6-flash-low",
+  "gemini-3.6-flash-extra-low",
+  "gemini-3.6-pro",
+  "gemini-3.6-pro-thinking",
+  "gemini-3.6-pro-high",
+  "gemini-3.6-pro-low",
+  "gemini-3.6-flash-high",
   // ── Claude ───────────────────────────────────────────────────────────────
   "claude-sonnet-4-6",
   "claude-opus-4-6-thinking",
@@ -69,6 +79,13 @@ const ANTIGRAVITY_ALIASES = [
 const PRIMARY_ANTIGRAVITY_ALIASES = [
   // Main Antigravity models shown in GUI mapping table.
   // Hide legacy 2.5 aliases; advanced aliases still work through config/import/CLI.
+  // Gemini 3.6 tiers
+  "gemini-3.6-flash",
+  "gemini-3.6-flash-thinking",
+  "gemini-3.6-flash-low",
+  "gemini-3.6-pro",
+  "gemini-3.6-pro-thinking",
+  "gemini-3.6-pro-high",
   // Gemini 3.5 tiers
   "gemini-3.5-flash",
   "gemini-3.5-flash-thinking",

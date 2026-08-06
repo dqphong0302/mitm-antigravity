@@ -36,6 +36,16 @@ function modelDisplayName(alias, mappedModel) {
         "gemini-3.5-flash-extra-low": "Gemini 3.5 Flash Extra Low",
         "gemini-3.5-pro": "Gemini 3.5 Pro",
         "gemini-3.5-pro-thinking": "Gemini 3.5 Pro Thinking",
+        // ── Gemini 3.6 ───────────────────────────────────────────────────────
+        "gemini-3.6-flash": "Gemini 3.6 Flash",
+        "gemini-3.6-flash-thinking": "Gemini 3.6 Flash Thinking",
+        "gemini-3.6-flash-high": "Gemini 3.6 Flash High",
+        "gemini-3.6-flash-low": "Gemini 3.6 Flash Low",
+        "gemini-3.6-flash-extra-low": "Gemini 3.6 Flash Extra Low",
+        "gemini-3.6-pro": "Gemini 3.6 Pro",
+        "gemini-3.6-pro-thinking": "Gemini 3.6 Pro Thinking",
+        "gemini-3.6-pro-high": "Gemini 3.6 Pro High",
+        "gemini-3.6-pro-low": "Gemini 3.6 Pro Low",
         // ── Claude 4.6 (versioned) ────────────────────────────────────────────
         "claude-sonnet-4-6": "Claude Sonnet 4.6",
         "claude-opus-4-6-thinking": "Claude Opus 4.6 Thinking",

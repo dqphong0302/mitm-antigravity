@@ -369,6 +369,269 @@ function guiStyles() {
       .path-item { grid-template-columns: 1fr; gap: 4px; }
       table { min-width: 680px; }
       .table-scroll { overflow-x: auto; }
+      .quotas-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Quotas Tab Styles */
+    .quotas-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 16px;
+      margin-top: 15px;
+    }
+    .acct-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .acct-card.cur {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent-border);
+    }
+    .acct-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .acct-row1 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .acct-email {
+      font-weight: 700;
+      font-size: 14px;
+      word-break: break-all;
+      color: var(--text);
+    }
+    .acct-name {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .acct-badges {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+    .badge {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge.tier {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border: 1px solid var(--accent-border);
+    }
+    .badge.cur {
+      background: var(--ok-soft);
+      color: var(--ok);
+      border: 1px solid var(--ok-border);
+    }
+    .badge.bad {
+      background: var(--danger-soft);
+      color: var(--danger);
+      border: 1px solid var(--danger-border);
+    }
+    .badge.warn {
+      background: var(--warn-soft);
+      color: var(--warn);
+      border: 1px solid var(--warn-border);
+    }
+    .acct-summary {
+      display: flex;
+      gap: 16px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      align-items: center;
+      background: var(--surface-soft);
+    }
+    .acct-donut {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: conic-gradient(var(--ok) calc(var(--p, 0) * 1%), var(--border) 0);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    .acct-donut::after {
+      content: "";
+      position: absolute;
+      width: 38px;
+      height: 38px;
+      background: var(--surface-soft);
+      border-radius: 50%;
+    }
+    .acct-donut-value {
+      position: relative;
+      z-index: 1;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .acct-stats {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .acct-stat-item {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .acct-stat-item strong {
+      color: var(--text);
+    }
+    .acct-windows {
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .acct-window {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .acct-window-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 2px;
+    }
+    .models-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .model-item {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .model-details {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+    }
+    .model-name {
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .model-name.rec::after {
+      content: "★";
+      color: var(--warn);
+      font-size: 11px;
+    }
+    .model-pct {
+      font-weight: 700;
+    }
+    .model-pct.good { color: var(--ok); }
+    .model-pct.warn { color: var(--warn); }
+    .model-pct.bad { color: var(--danger); }
+    
+    .model-progress-bar {
+      height: 6px;
+      background: var(--surface-soft);
+      border-radius: 999px;
+      overflow: hidden;
+      width: 100%;
+    }
+    .model-progress-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--ok);
+      transition: width 0.3s;
+    }
+    .model-progress-fill.good { background: var(--ok); }
+    .model-progress-fill.warn { background: var(--warn); }
+    .model-progress-fill.bad { background: var(--danger); }
+
+    .acct-quota-groups-section {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: var(--surface);
+    }
+    .acct-quota-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .acct-group-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px dashed var(--border);
+      padding-bottom: 4px;
+    }
+    .acct-group-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .acct-group-desc {
+      font-size: 11px;
+      color: var(--muted);
+      cursor: help;
+    }
+    .buckets-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .bucket-item {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .bucket-details {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+    }
+    .bucket-name {
+      font-weight: 600;
+      color: var(--text);
+    }
+    .bucket-pct {
+      font-weight: 700;
+    }
+
+    .acct-footer {
+      margin-top: auto;
+      padding: 10px 16px;
+      background: var(--surface-soft);
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
     }
   `;
 }

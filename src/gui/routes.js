@@ -23,6 +23,7 @@ function createGuiRoutes(handlers) {
         ["GET", "/api/status", handlers.handleStatus],
         ["GET", "/api/events", handlers.handleEvents],
         ["POST", "/api/logs/clear", handlers.handleClearLogs],
+        ["GET", "/api/quotas", handlers.handleGetQuotas],
     ].map(([method, pathname, handler]) => ({ method, pathname, handler }));
 }
 
